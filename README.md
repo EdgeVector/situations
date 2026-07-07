@@ -22,7 +22,7 @@ fsituations list --json
 If the CLI is not installed but this checkout is available:
 
 ```bash
-bun --cwd /Users/tomtang/code/edgevector/fsituations run src/cli.ts list --json
+bun --cwd /Users/tomtang/code/edgevector/fsituations src/cli.ts list --json
 ```
 
 If F-Situations is not initialized, agents may continue read-only local

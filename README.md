@@ -19,7 +19,19 @@ Agents should check F-Situations before starting work:
 fsituations list --json
 ```
 
-If the CLI is not installed but this checkout is available:
+## Install
+
+Install the user PATH shim from this checkout:
+
+```bash
+bun run install-shim
+```
+
+The installer creates `~/.local/bin/fsituations` by default, or `~/bin` when
+that is the user bin directory already on PATH. Set `FSITUATIONS_INSTALL_BIN`
+to choose another directory.
+
+If the shim is not installed but this checkout is available, use the fallback:
 
 ```bash
 bun --cwd /Users/tomtang/code/edgevector/fsituations src/cli.ts list --json

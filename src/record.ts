@@ -142,9 +142,18 @@ function normalizePhases(raw: unknown[]): SituationPhase[] {
     .filter((phase) => phase.slug.length > 0);
 }
 
-export function normalizeSituation(input: SituationInput, existing?: Situation): Situation {
+type NormalizeOptions = {
+  touchUpdatedAt?: boolean;
+};
+
+export function normalizeSituation(
+  input: SituationInput,
+  existing?: Situation,
+  options: NormalizeOptions = {},
+): Situation {
   validateSlug(input.slug);
   const now = nowIso();
+  const touchUpdatedAt = options.touchUpdatedAt ?? true;
   const phases =
     input.phases ??
     (input.phases_json !== undefined ? parsePhases(input.phases_json) : existing?.phases) ??
@@ -177,7 +186,7 @@ export function normalizeSituation(input: SituationInput, existing?: Situation):
     links_brain: input.links_brain ?? existing?.links_brain ?? [],
     owner: input.owner ?? existing?.owner ?? "",
     created_at: existing?.created_at ?? input.created_at ?? now,
-    updated_at: now,
+    updated_at: touchUpdatedAt ? now : (input.updated_at ?? existing?.updated_at ?? ""),
     expires_at: input.expires_at ?? existing?.expires_at ?? "",
   };
 }
@@ -210,34 +219,33 @@ export function situationToFields(situation: Situation): Record<string, unknown>
 
 export function rowToSituation(row: QueryRow): Situation {
   const f = row.fields;
-  const situation = normalizeSituation({
-    slug: String(f.slug ?? ""),
-    title: String(f.title ?? ""),
-    summary: String(f.summary ?? ""),
-    status: String(f.status ?? "active") as SituationStatus,
-    severity: String(f.severity ?? "p2") as Severity,
-    scope_systems: normalizeList(f.scope_systems),
-    scope_repos: normalizeList(f.scope_repos),
-    scope_routines: normalizeList(f.scope_routines),
-    scope_automations: normalizeList(f.scope_automations),
-    current_phase: String(f.current_phase ?? ""),
-    phases: parsePhases(f.phases_json),
-    blocked_actions: normalizeList(f.blocked_actions),
-    allowed_actions: normalizeList(f.allowed_actions),
-    requires_human_clearance: normalizeList(f.requires_human_clearance),
-    preflight_message: String(f.preflight_message ?? ""),
-    links_kanban: normalizeList(f.links_kanban),
-    links_brain: normalizeList(f.links_brain),
-    owner: String(f.owner ?? ""),
-    created_at: String(f.created_at ?? ""),
-    updated_at: String(f.updated_at ?? ""),
-    expires_at: String(f.expires_at ?? ""),
-  });
-  return {
-    ...situation,
-    created_at: String(f.created_at ?? ""),
-    updated_at: String(f.updated_at ?? ""),
-  };
+  return normalizeSituation(
+    {
+      slug: String(f.slug ?? ""),
+      title: String(f.title ?? ""),
+      summary: String(f.summary ?? ""),
+      status: String(f.status ?? "active") as SituationStatus,
+      severity: String(f.severity ?? "p2") as Severity,
+      scope_systems: normalizeList(f.scope_systems),
+      scope_repos: normalizeList(f.scope_repos),
+      scope_routines: normalizeList(f.scope_routines),
+      scope_automations: normalizeList(f.scope_automations),
+      current_phase: String(f.current_phase ?? ""),
+      phases: parsePhases(f.phases_json),
+      blocked_actions: normalizeList(f.blocked_actions),
+      allowed_actions: normalizeList(f.allowed_actions),
+      requires_human_clearance: normalizeList(f.requires_human_clearance),
+      preflight_message: String(f.preflight_message ?? ""),
+      links_kanban: normalizeList(f.links_kanban),
+      links_brain: normalizeList(f.links_brain),
+      owner: String(f.owner ?? ""),
+      created_at: String(f.created_at ?? ""),
+      updated_at: String(f.updated_at ?? ""),
+      expires_at: String(f.expires_at ?? ""),
+    },
+    undefined,
+    { touchUpdatedAt: false },
+  );
 }
 
 export async function findSituation(

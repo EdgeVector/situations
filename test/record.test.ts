@@ -4,11 +4,13 @@ import {
   activeSituations,
   normalizeSituation,
   preflight,
+  requireSituation,
   situationToFields,
   rowToSituation,
   type Situation,
 } from "../src/record.ts";
-import type { QueryRow } from "../src/client.ts";
+import type { NodeClient, QueryRow } from "../src/client.ts";
+import type { Config } from "../src/config.ts";
 
 function baseSituation(overrides: Partial<Situation> = {}): Situation {
   return normalizeSituation({
@@ -110,5 +112,51 @@ describe("record mapping", () => {
     expect(restored.blocked_actions).toEqual(["enable-ci", "reenable-automation"]);
     expect(restored.created_at).toBe(situation.created_at);
     expect(restored.updated_at).toBe(situation.updated_at);
+  });
+
+  test("reads are pure and preserve updated_at across repeated gets", async () => {
+    const stored = {
+      ...baseSituation(),
+      updated_at: "2026-07-12T18:49:06.950Z",
+    };
+    const row: QueryRow = {
+      fields: situationToFields(stored),
+      key: { hash: stored.slug, range: null },
+    };
+    const updates: string[] = [];
+    const cfg: Config = {
+      configVersion: 1,
+      nodeUrl: "http://127.0.0.1:9001",
+      schemaServiceUrl: "",
+      userHash: "test-user",
+      schemaHashes: { situation: "test-situation-schema" },
+    };
+    const node: NodeClient = {
+      baseUrl: cfg.nodeUrl,
+      userHash: cfg.userHash,
+      async autoIdentity() {
+        return { provisioned: true, userHash: cfg.userHash };
+      },
+      async listSchemas() {
+        return [];
+      },
+      async createRecord() {
+        throw new Error("read path must not create records");
+      },
+      async updateRecord({ keyHash }) {
+        updates.push(keyHash);
+        throw new Error("read path must not update records");
+      },
+      async queryAll() {
+        return { ok: true, results: [row], returned_count: 1, total_count: 1 };
+      },
+    };
+
+    const first = await requireSituation(node, cfg, stored.slug);
+    const second = await requireSituation(node, cfg, stored.slug);
+
+    expect(first.updated_at).toBe("2026-07-12T18:49:06.950Z");
+    expect(second.updated_at).toBe(first.updated_at);
+    expect(updates).toEqual([]);
   });
 });

@@ -16,6 +16,11 @@ import {
 } from "./config.ts";
 import { loadCtx } from "./context.ts";
 import {
+  parseFieldProjection,
+  printFieldProjection,
+  type FieldProjectionSource,
+} from "./field-projection.ts";
+import {
   activeSituations,
   listSituations,
   preflight,
@@ -35,21 +40,27 @@ Commands:
   init                 write ~/.situations/config.json from node/schema details
   schema               print the Situation schema JSON for publishing/loading
   put <json-file|- >   create/update a situation from JSON
-  list                 list active/current situations (--all, --json)
-  show <slug>          show one situation (--json)
+  list                 list active/current situations (--all, --json, --field)
+  show <slug>          show one situation (--json, --field)
   preflight            check whether an action is blocked (--action plus scope)
   version              print version
   help                 print this help
 
 Common flags:
   --json               machine-readable output
+  --field <a,b,c>      project fields as plain tab-separated text — one row per
+                       situation, missing field → empty. Use this instead of
+                       piping --json into python/node to pull one field. Common
+                       fields: slug, status, severity, title, current_phase,
+                       scope_repos (arrays join with ,).
   --config <path>      config path (else $SITUATIONS_CONFIG, $FSITUATIONS_CONFIG, or ~/.situations/config.json)
 
 Examples:
   situations schema
   situations put examples/forge-ci-containment.json
+  situations list --field slug,status,severity
   situations preflight --file examples/forge-ci-containment.json --action enable-ci --repo EdgeVector/fold
-  situations preflight --action enable-ci --repo EdgeVector/fold --json
+  situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
 
 Compatibility: fsituations remains an alias during the migration.`;
 
@@ -74,6 +85,31 @@ printed by \`situations schema\`, then rerun init.`;
 
 Creates or updates one situation. The JSON keys mirror the Situation record:
 slug, title, status, severity, scope_repos, phases, blocked_actions, etc.`;
+    case "list":
+      return `situations list [--all] [--json] [--field <a,b,c>]
+
+Options:
+  --all                include resolved/expired situations, not just active
+  --json               print the full situations array as JSON
+  --field <a,b,c>      project fields as plain tab-separated text (one row per
+                       situation). Prefer this over \`--json | python -c ...\`.
+                       Common fields: slug, status, severity, title,
+                       current_phase, scope_repos (arrays join with ,).
+
+Examples:
+  situations list --field slug,status,severity
+  situations list --all --field slug,status`;
+    case "show":
+      return `situations show <slug> [--json] [--field <a,b,c>]
+
+Options:
+  --json               print the full situation as JSON
+  --field <a,b,c>      project fields as plain tab-separated text (one row).
+                       Common fields: slug, status, severity, title,
+                       current_phase, scope_repos (arrays join with ,).
+
+Example:
+  situations show forge-ci-containment --field slug,current_phase`;
     case "preflight":
       return `situations preflight --action <action> [scope]
 
@@ -83,7 +119,15 @@ Scope options:
   --routine <name>
   --automation <name>
   --file <json-file>  check one JSON situation file instead of LastDB
-  --json`;
+  --json               print the full preflight result as JSON
+  --field <a,b,c>     project the blocking situations as plain tab-separated
+                      text (one row per block; nothing when allowed). Fields
+                      include the situation fields plus reason, action, message.
+                      Prefer this over \`--json | python -c ...\`.
+
+Examples:
+  situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
+  situations preflight --action enable-ci --repo EdgeVector/fold --json`;
     default:
       return TOP_HELP;
   }
@@ -255,18 +299,24 @@ async function listCmd(rest: string[]): Promise<number> {
       config: { type: "string" },
       json: { type: "boolean", default: false },
       all: { type: "boolean", default: false },
+      field: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
   });
   if (parsed.values.help) {
-    console.log("situations list [--all] [--json]");
+    console.log(usageFor("list"));
     return 0;
   }
+  const fields = parseFieldProjection(parsed.values.field);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
   const situations = await listSituations(node, cfg);
   const visible = parsed.values.all ? situations : activeSituations(situations);
-  if (parsed.values.json) {
+  if (fields.length > 0) {
+    printFieldProjection(visible as unknown as FieldProjectionSource[], fields, (line) =>
+      console.log(line),
+    );
+  } else if (parsed.values.json) {
     console.log(JSON.stringify(visible, null, 2));
   } else {
     console.log(renderList(visible));
@@ -280,19 +330,27 @@ async function showCmd(rest: string[]): Promise<number> {
     options: {
       config: { type: "string" },
       json: { type: "boolean", default: false },
+      field: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
   });
   if (parsed.values.help) {
-    console.log("situations show <slug> [--json]");
+    console.log(usageFor("show"));
     return 0;
   }
+  const fields = parseFieldProjection(parsed.values.field);
   const slug = parsed.positionals[0];
   if (!slug) throw new FsituationsError({ code: "missing_slug", message: "Missing situation slug." });
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
   const situation = await requireSituation(node, cfg, slug);
-  console.log(parsed.values.json ? JSON.stringify(situation, null, 2) : renderSituation(situation));
+  if (fields.length > 0) {
+    printFieldProjection([situation as unknown as FieldProjectionSource], fields, (line) =>
+      console.log(line),
+    );
+  } else {
+    console.log(parsed.values.json ? JSON.stringify(situation, null, 2) : renderSituation(situation));
+  }
   return 0;
 }
 
@@ -308,6 +366,7 @@ async function preflightCmd(rest: string[]): Promise<number> {
       automation: { type: "string" },
       file: { type: "string" },
       json: { type: "boolean", default: false },
+      field: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
@@ -316,6 +375,7 @@ async function preflightCmd(rest: string[]): Promise<number> {
     console.log(usageFor("preflight"));
     return 0;
   }
+  const fields = parseFieldProjection(parsed.values.field);
   const action = parsed.values.action;
   if (!action) {
     throw new FsituationsError({
@@ -334,7 +394,19 @@ async function preflightCmd(rest: string[]): Promise<number> {
     routine: parsed.values.routine,
     automation: parsed.values.automation,
   });
-  if (parsed.values.json) {
+  if (fields.length > 0) {
+    // Project over the blocking situations: each row is the blocking
+    // situation's fields plus the block's reason/action/message, so
+    // `preflight --action X --field slug,reason` needs no JSON parse. No
+    // blocks (allowed) prints nothing; exit code is unchanged.
+    const rows: FieldProjectionSource[] = result.blocks.map((block) => ({
+      ...(block.situation as unknown as FieldProjectionSource),
+      reason: block.reason,
+      action: block.action,
+      message: block.message,
+    }));
+    printFieldProjection(rows, fields, (line) => console.log(line));
+  } else if (parsed.values.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(renderPreflight(result));

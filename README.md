@@ -13,11 +13,30 @@ It fills the gap between F-Brain and F-Kanban:
 
 ## Agent contract
 
-Agents should check F-Situations before starting work:
+Agents should check F-Situations before starting work. Use the readable
+default, or `--field` to pull specific columns as plain tab-separated text —
+**do not pipe `--json` into `python -c`/`node -e` to reformat it** (that trips
+the inline-JSON-parse safety hook):
 
 ```bash
-situations list --json
+situations list                                # human-readable
+situations list --field slug,status,severity   # plain TSV, one row per situation
 ```
+
+`--field <comma,sep>` is available on `list`, `show`, and `preflight`. It
+prints the requested fields as tab-separated columns (missing field → empty
+cell; array fields like `scope_repos` join with `,`). Common fields: `slug`,
+`status`, `severity`, `title`, `current_phase`, `scope_repos`. On `preflight`
+it projects the blocking situations (their fields plus `reason`, `action`,
+`message`) and prints nothing when the action is allowed:
+
+```bash
+situations show forge-ci-containment --field slug,current_phase
+situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
+```
+
+`--json` (full machine-readable output) remains available when you need the
+whole record, but prefer `--field` for pulling one or two values.
 
 ## Install
 
@@ -64,6 +83,7 @@ bun run src/cli.ts schema
 bun run src/cli.ts init --schema-hash <loaded-fsituations-situation-hash>
 bun run src/cli.ts put examples/forge-ci-containment.json
 bun run src/cli.ts list
+bun run src/cli.ts list --field slug,status,severity
 bun run src/cli.ts preflight --action enable-ci --repo EdgeVector/fold
 ```
 

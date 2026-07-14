@@ -1,17 +1,12 @@
-name: Discord Notifications
-on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, closed, reopened]
-  issues:
-    types: [opened, closed, reopened]
-  issue_comment:
-    types: [created]
+name: discord-notify.yml (mirror-inert)
 
-permissions: {}
+# GitHub is a read-only mirror. LastGit is source of truth for CR/CI/merge.
+on:
+  workflow_dispatch:
 
 jobs:
-  call:
-    uses: EdgeVector/.github/.github/workflows/discord-notify.yml@main
-    secrets: inherit
+  inert:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "GitHub mirror — no Actions. Use LastGit (lastdb:///discord-notify.yml_SLUG) + code-node forge."
+

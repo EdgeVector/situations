@@ -1,7 +1,4 @@
 lastgit
-# Gate of record for EdgeVector/situations: LastGit CRs on lastdb:///situations
-# (code node). PUBLIC open-source dual-home:
-#   - LastGit = agent/Tom CR + CI + auto-merge (canonical for merge policy)
-#   - GitHub  = public clone + external visibility (origin stays github.com)
-# After LastGit merge, push/mirror main to origin so the public tree stays current.
-# Do NOT make this LastGit-only — brew/docs/OSS consumers use GitHub.
+# Gate of record: LastGit lastdb:///situations (code node).
+# GitHub is a PUBLIC READ-ONLY MIRROR for clone/browse only.
+# Do not use GitHub PRs for merge policy. Mirror via .lastgit/sync-github-mirror.sh.

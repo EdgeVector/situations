@@ -1,18 +1,12 @@
-name: CI
+name: ci.yml (mirror-inert)
 
+# GitHub is a read-only mirror. LastGit is source of truth for CR/CI/merge.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
-  ci-required:
+  inert:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun test
-      - run: bun run typecheck
+      - run: echo "GitHub mirror — no Actions. Use LastGit (lastdb:///ci.yml_SLUG) + code-node forge."
+

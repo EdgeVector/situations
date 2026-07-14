@@ -1,22 +1,17 @@
-# LastGit home — situations (public dual-home)
+# LastGit home — situations (GitHub = public mirror)
 
 | Role | Location |
 |------|----------|
-| **CR / CI / merge (agents)** | `lastdb:///situations` on code node |
-| **Public source** | `https://github.com/EdgeVector/situations` (`origin`) |
-
-## Why dual-home
-
-LastGit is a **private** forge (your lastdbd). Open-source consumers cannot
-clone `lastdb://`. GitHub stays the public mirror so `git clone`, stars, and
-external browsing keep working.
+| **SoT / CR / CI / merge** | `lastdb:///situations` on code node |
+| **Public mirror** | `https://github.com/EdgeVector/situations` (read-only for merge) |
 
 ## Workflow
 
 1. Agents open CRs with `lastgit cr` (venue = `lastgit`).
-2. Multi-repo forge runs `.lastgit/ci.sh` → `ci-required`.
-3. Auto-merge updates LastGit `main`.
-4. **Mirror:** `git push origin main` (or scheduled mirror) so GitHub matches.
+2. Multi-repo forge runs `.lastgit/ci.sh` → `ci-required` → auto-merge.
+3. Mirror job pushes LastGit `main` → GitHub `main` (see `sync-github-mirror.sh`).
+
+GitHub Actions are inert. Do not merge on GitHub.
 
 ## Pin
 

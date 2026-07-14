@@ -12,6 +12,8 @@
 //   - `GET /api/system/auto-identity` — resolve/provision the local owner hash.
 //   - `GET /api/schemas`              — list loaded schemas so `init` can pin
 //                                       the canonical fsituations/Situation hash.
+//   - `POST /api/apps/declare-schema` — Mini first-run local mint (same path as
+//                                       brain/kanban init).
 // Both are node-owner endpoints (no capability, no app scope), so they stay on
 // the raw fetch-over-UDS path below.
 
@@ -73,6 +75,14 @@ export type LoadedSchema = {
   fields: string[];
 };
 
+export type AppSchemaDeclaration = {
+  app_id: string;
+  schema: string;
+  canonical: string;
+  resolution: string;
+  decision?: string;
+};
+
 export type NodeClient = {
   baseUrl: string;
   userHash: string;
@@ -81,6 +91,10 @@ export type NodeClient = {
     | { provisioned: false; reason: string }
   >;
   listSchemas(): Promise<LoadedSchema[]>;
+  declareAppSchema(
+    appId: string,
+    schema: Record<string, unknown>,
+  ): Promise<AppSchemaDeclaration>;
   createRecord(opts: {
     schemaHash: string;
     fields: Record<string, unknown>;
@@ -225,6 +239,32 @@ export function newNodeClient(opts: {
             ? schema.fields.filter((field): field is string => typeof field === "string")
             : [],
         }));
+    },
+    async declareAppSchema(appId, schema) {
+      const { status, body } = await callJson("POST", "/api/apps/declare-schema", {
+        app_id: appId,
+        schema,
+      });
+      if (status !== 200) throw mapNodeError(status, body, "/api/apps/declare-schema");
+      const b =
+        body && typeof body === "object" ? (body as Record<string, unknown>) : ({} as Record<string, unknown>);
+      const canonical = typeof b.canonical === "string" ? b.canonical : "";
+      const schemaName = typeof b.schema === "string" ? b.schema : "";
+      const resolution = typeof b.resolution === "string" ? b.resolution : "";
+      if (!canonical || !schemaName || !resolution) {
+        throw new FsituationsError({
+          code: "app_schema_declare_bad_response",
+          message: `Node /api/apps/declare-schema returned an incomplete response: ${JSON.stringify(body).slice(0, 300)}.`,
+          hint: "Upgrade the node or inspect the app-schema declaration response.",
+        });
+      }
+      return {
+        app_id: typeof b.app_id === "string" ? b.app_id : appId,
+        schema: schemaName,
+        canonical,
+        resolution,
+        decision: typeof b.decision === "string" ? b.decision : undefined,
+      };
     },
     async createRecord({ schemaHash, fields, keyHash }) {
       await mutate("create", schemaHash, fields, keyHash);

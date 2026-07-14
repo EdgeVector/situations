@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 
 import pkg from "../package.json" with { type: "json" };
-import { FsituationsError, newNodeClient, type NodeClient } from "./client.ts";
+import { FsituationsError, newNodeClient } from "./client.ts";
 import {
   ConfigInvalidError,
   ConfigMissingError,
@@ -29,7 +29,8 @@ import {
   type Situation,
   type SituationInput,
 } from "./record.ts";
-import { OWNER_APP_ID, situationSchema } from "./schemas.ts";
+import { resolveOrDeclareSituationHash } from "./init-schema.ts";
+import { situationSchema } from "./schemas.ts";
 
 export const TOP_HELP = `situations — current operational posture over LastDB
 
@@ -37,7 +38,7 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json from node/schema details
+  init                 write ~/.situations/config.json (declares schema on Mini)
   schema               print the Situation schema JSON for publishing/loading
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
@@ -77,9 +78,11 @@ Options:
   --schema-hash <hash>         canonical hash for fsituations/Situation
   --config <path>              write config path
 
-If --schema-hash is omitted, init asks the node for loaded schemas and resolves
-the loaded fsituations/Situation schema. If missing, publish/load the schema
-printed by \`situations schema\`, then rerun init.`;
+If --schema-hash is omitted, init asks the node for a loaded fsituations/Situation
+schema. On LastDB Mini (and other nodes that expose POST /api/apps/declare-schema),
+a missing schema is declared locally and pinned — same first-run path as brain
+and kanban. On older nodes without that route, publish/load the schema from
+\`situations schema --json\` (or pass --schema-hash), then re-run init.`;
     case "put":
       return `situations put <json-file|->
 
@@ -222,7 +225,9 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
-  const schemaHash = parsed.values["schema-hash"] ?? (await resolveLoadedSituationHash(node));
+  const schemaHash =
+    parsed.values["schema-hash"] ??
+    (await resolveOrDeclareSituationHash(node, { quiet: Boolean(parsed.values.json) }));
   if (!schemaHash) {
     throw new FsituationsError({
       code: "schema_not_loaded",
@@ -243,19 +248,6 @@ async function initCmd(rest: string[]): Promise<number> {
   const result = { config: cfgPath, schemaHash, userHash: identity.userHash };
   console.log(parsed.values.json ? JSON.stringify(result, null, 2) : `wrote ${cfgPath}`);
   return 0;
-}
-
-async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {
-  const loaded = await node.listSchemas();
-  const candidates = loaded.filter(
-    (schema) =>
-      schema.owner_app_id === OWNER_APP_ID &&
-      schema.descriptive_name === situationSchema.schema.descriptive_name,
-  );
-  const full = candidates.find((schema) =>
-    situationSchema.schema.fields.every((field) => schema.fields.includes(field)),
-  );
-  return full?.name ?? candidates[0]?.name ?? null;
 }
 
 async function putCmd(rest: string[]): Promise<number> {

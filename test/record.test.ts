@@ -140,6 +140,9 @@ describe("record mapping", () => {
       async listSchemas() {
         return [];
       },
+      async declareAppSchema() {
+        throw new Error("read path must not declare schemas");
+      },
       async createRecord() {
         throw new Error("read path must not create records");
       },

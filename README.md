@@ -80,7 +80,8 @@ Situation slug.
 
 ```bash
 bun run src/cli.ts schema
-bun run src/cli.ts init --schema-hash <loaded-fsituations-situation-hash>
+bun run src/cli.ts init
+# optional pin: bun run src/cli.ts init --schema-hash <canonical-hash>
 bun run src/cli.ts put examples/forge-ci-containment.json
 bun run src/cli.ts list
 bun run src/cli.ts list --field slug,status,severity
@@ -98,8 +99,11 @@ The app owns `fsituations/Situation`. Print the schema payload with:
 bun run src/cli.ts schema --json
 ```
 
-The schema follows the same published-out-of-band pattern as F-Kanban: the CLI
-does not register schemas itself. Publish/load the schema on the node, then run
-`init` so the CLI records the canonical hash in `~/.situations/config.json`.
+On LastDB Mini (and other nodes with `POST /api/apps/declare-schema`), bare
+`situations init` declares the schema locally and writes the canonical hash to
+`~/.situations/config.json` — same first-run path as brain/kanban. You can still
+pass `--schema-hash` to pin a pre-published schema, or load the payload from
+`situations schema --json` on older nodes that lack declare-schema.
+
 The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
 and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.

@@ -71,7 +71,7 @@ function usageFor(command: string): string {
       return `situations init
 
 Options:
-  --node-url <url>             node identity URL (default http://127.0.0.1:9001)
+  --node-url <url>             loopback marker for local node (default http://127.0.0.1; transport is the Unix socket)
   --schema-service-url <url>   schema service URL kept for diagnostics
   --node-socket-path <path>    unix socket path (default ~/.lastdb/data/folddb.sock)
   --user-hash <hash>           user hash; if omitted, asks node /api/auto_identity
@@ -191,7 +191,7 @@ async function initCmd(rest: string[]): Promise<number> {
   const parsed = parseArgs({
     args: rest,
     options: {
-      "node-url": { type: "string", default: "http://127.0.0.1:9001" },
+      "node-url": { type: "string", default: "http://127.0.0.1" },
       "schema-service-url": { type: "string", default: "" },
       "node-socket-path": { type: "string" },
       "user-hash": { type: "string" },
@@ -208,7 +208,7 @@ async function initCmd(rest: string[]): Promise<number> {
   }
 
   const cfgPath = parsed.values.config ?? defaultConfigPath();
-  const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1:9001";
+  const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];
   const userHash = parsed.values["user-hash"] ?? "";
   const node = newNodeClient({

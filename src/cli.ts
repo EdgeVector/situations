@@ -29,39 +29,54 @@ import {
   type Situation,
   type SituationInput,
 } from "./record.ts";
-import { resolveOrDeclareSituationHash } from "./init-schema.ts";
-import { situationSchema } from "./schemas.ts";
+import {
+  filterNotices,
+  hasNoticeSchema,
+  listNotices,
+  normalizeNotice,
+  renderNotice,
+  renderNoticesList,
+  requireNotice,
+  upsertNotice,
+  type NoticeInput,
+} from "./notice.ts";
+import { resolveOrDeclareSchemaHashes } from "./init-schema.ts";
+import { noticeSchema, situationSchema } from "./schemas.ts";
 
-export const TOP_HELP = `situations — current operational posture over LastDB
+export const TOP_HELP = `situations — current operational posture + agent-impact notices over LastDB
 
 Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json (declares schema on Mini)
-  schema               print the Situation schema JSON for publishing/loading
+  init                 write ~/.situations/config.json (declares Situation + Notice schemas on Mini)
+  schema               print Situation and/or Notice schema JSON
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
   show <slug>          show one situation (--json, --field)
   preflight            check whether an action is blocked (--action plus scope)
+  notice               post a non-blocking agent-impact FYI notice
+  notices              list recent notices (never blocks preflight)
   version              print version
   help                 print this help
 
 Common flags:
   --json               machine-readable output
   --field <a,b,c>      project fields as plain tab-separated text — one row per
-                       situation, missing field → empty. Use this instead of
-                       piping --json into python/node to pull one field. Common
-                       fields: slug, status, severity, title, current_phase,
-                       scope_repos (arrays join with ,).
+                       record, missing field → empty. Use this instead of
+                       piping --json into python/node to pull one field.
   --config <path>      config path (else $SITUATIONS_CONFIG, $FSITUATIONS_CONFIG, or ~/.situations/config.json)
+
+Notices are non-blocking: upgrades/restarts that other agents should treat as
+context, not policy. Situation preflight is unchanged.
 
 Examples:
   situations schema
   situations put examples/forge-ci-containment.json
   situations list --field slug,status,severity
-  situations preflight --file examples/forge-ci-containment.json --action enable-ci --repo EdgeVector/fold
-  situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
+  situations notice --title "LastDB upgraded to 0.22.8" --kind upgrade --system lastdbd
+  situations notices --since 30m
+  situations preflight --action enable-ci --repo EdgeVector/fold
 
 Compatibility: fsituations remains an alias during the migration.`;
 
@@ -75,14 +90,14 @@ Options:
   --schema-service-url <url>   schema service URL kept for diagnostics
   --node-socket-path <path>    unix socket path (default ~/.lastdb/data/folddb.sock)
   --user-hash <hash>           user hash; if omitted, asks node /api/auto_identity
-  --schema-hash <hash>         canonical hash for fsituations/Situation
+  --schema-hash <hash>         canonical hash for fsituations/Situation (legacy pin)
+  --notice-schema-hash <hash>  canonical hash for fsituations/Notice
   --config <path>              write config path
 
-If --schema-hash is omitted, init asks the node for a loaded fsituations/Situation
-schema. On LastDB Mini (and other nodes that expose POST /api/apps/declare-schema),
-a missing schema is declared locally and pinned — same first-run path as brain
-and kanban. On older nodes without that route, publish/load the schema from
-\`situations schema --json\` (or pass --schema-hash), then re-run init.`;
+If hashes are omitted, init asks the node for loaded fsituations schemas. On
+LastDB Mini (POST /api/apps/declare-schema), missing schemas are declared
+locally and pinned — Situation and Notice. On older nodes without that route,
+publish/load from \`situations schema --json\`, then re-run init.`;
     case "put":
       return `situations put <json-file|->
 
@@ -98,6 +113,8 @@ Options:
                        situation). Prefer this over \`--json | python -c ...\`.
                        Common fields: slug, status, severity, title,
                        current_phase, scope_repos (arrays join with ,).
+
+Human-readable list also prints a one-line banner when recent notices exist.
 
 Examples:
   situations list --field slug,status,severity
@@ -131,6 +148,56 @@ Scope options:
 Examples:
   situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
   situations preflight --action enable-ci --repo EdgeVector/fold --json`;
+    case "notice":
+      return `situations notice — post a non-blocking agent-impact FYI
+
+Subcommands / forms:
+  situations notice put <json-file|->
+  situations notice show <slug> [--json] [--field ...]
+  situations notice --title "..." --kind upgrade --system lastdbd [flags]
+
+Flags (create form):
+  --title <text>           required one-line headline
+  --kind <k>               upgrade|restart|deploy|config|cutover|other (default other)
+  --summary <text>         what happened / expected fallout
+  --system <name>          repeatable; scope_systems
+  --app <name>             repeatable; scope_apps
+  --actor <id>             skill:… / agent:… / human
+  --related-situation <s>  optional Situation slug
+  --severity-hint <h>      info|warn (default info)
+  --slug <slug>            optional; auto-generated if omitted
+  --at <rfc3339>           event time (default now)
+  --expires-at <rfc3339>   expiry (default at+24h)
+  --expires-hours <n>      alternate TTL from --at
+  --json
+
+Notices never affect preflight. Use them so other agents can attribute flapping.
+
+Examples:
+  situations notice --title "LastDB upgraded to 0.22.8" --kind upgrade \\
+    --system lastdbd --system primary-brain --actor skill:lastdb-safe-upgrade \\
+    --summary "brew 0.22.7 → 0.22.8; brief socket blips expected ~10–15m"
+  situations notice put examples/lastdb-upgrade-notice.json`;
+    case "notices":
+      return `situations notices — list recent non-blocking notices
+
+Options:
+  --since <dur>        only events with at >= now-dur (e.g. 30m, 2h, 1d)
+  --system <name>      filter scope_systems
+  --app <name>         filter scope_apps
+  --kind <k>           filter kind
+  --all                include expired
+  --json
+  --field <a,b,c>      TSV projection (common: slug,at,kind,title,scope_systems)
+
+Examples:
+  situations notices
+  situations notices --since 30m --system lastdbd
+  situations notices --field slug,at,kind,title`;
+    case "schema":
+      return `situations schema [--type situation|notice|all] [--json]
+
+Print the schema payload(s) for publishing/loading. Default is both.`;
     default:
       return TOP_HELP;
   }
@@ -160,6 +227,10 @@ async function main(argv: string[]): Promise<number> {
       return await showCmd(rest);
     case "preflight":
       return await preflightCmd(rest);
+    case "notice":
+      return await noticeCmd(rest);
+    case "notices":
+      return await noticesCmd(rest);
     default:
       throw new FsituationsError({
         code: "unknown_command",
@@ -172,18 +243,30 @@ async function main(argv: string[]): Promise<number> {
 function schemaCmd(rest: string[]): number {
   const parsed = parseArgs({
     args: rest,
-    options: { json: { type: "boolean", default: false }, help: { type: "boolean", short: "h" } },
+    options: {
+      json: { type: "boolean", default: false },
+      type: { type: "string", default: "all" },
+      help: { type: "boolean", short: "h" },
+    },
     allowPositionals: false,
   });
   if (parsed.values.help) {
-    console.log("situations schema -- print the Situation schema JSON");
+    console.log(usageFor("schema"));
     return 0;
   }
-  if (parsed.values.json) {
-    console.log(JSON.stringify(situationSchema, null, 2));
-  } else {
-    console.log(JSON.stringify(situationSchema, null, 2));
+  const type = (parsed.values.type ?? "all").toLowerCase();
+  let payload: unknown;
+  if (type === "situation") payload = situationSchema;
+  else if (type === "notice") payload = noticeSchema;
+  else if (type === "all") payload = { situation: situationSchema, notice: noticeSchema };
+  else {
+    throw new FsituationsError({
+      code: "invalid_type",
+      message: `Unknown --type "${type}".`,
+      hint: "Use situation, notice, or all.",
+    });
   }
+  console.log(JSON.stringify(payload, null, 2));
   return 0;
 }
 
@@ -196,6 +279,7 @@ async function initCmd(rest: string[]): Promise<number> {
       "node-socket-path": { type: "string" },
       "user-hash": { type: "string" },
       "schema-hash": { type: "string" },
+      "notice-schema-hash": { type: "string" },
       config: { type: "string" },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
@@ -225,28 +309,48 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
-  const schemaHash =
-    parsed.values["schema-hash"] ??
-    (await resolveOrDeclareSituationHash(node, { quiet: Boolean(parsed.values.json) }));
-  if (!schemaHash) {
+  const declared = await resolveOrDeclareSchemaHashes(node, {
+    quiet: Boolean(parsed.values.json),
+  });
+  const situationHash = parsed.values["schema-hash"] ?? declared.situation;
+  const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
+
+  if (!situationHash) {
     throw new FsituationsError({
       code: "schema_not_loaded",
       message: "No loaded fsituations/Situation schema was found on the node.",
-      hint: "Publish/load the schema from `situations schema --json`, or pass --schema-hash.",
+      hint: "Publish/load the schema from `situations schema --type situation --json`, or pass --schema-hash.",
     });
   }
+
+  const schemaHashes: Record<string, string> = { situation: situationHash };
+  if (noticeHash) schemaHashes.notice = noticeHash;
 
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
     nodeUrl,
     schemaServiceUrl: parsed.values["schema-service-url"] ?? "",
     userHash: identity.userHash,
-    schemaHashes: { situation: schemaHash },
+    schemaHashes,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath);
-  const result = { config: cfgPath, schemaHash, userHash: identity.userHash };
-  console.log(parsed.values.json ? JSON.stringify(result, null, 2) : `wrote ${cfgPath}`);
+  const result = {
+    config: cfgPath,
+    schemaHash: situationHash,
+    noticeSchemaHash: noticeHash ?? null,
+    userHash: identity.userHash,
+  };
+  if (parsed.values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`wrote ${cfgPath}`);
+    if (!noticeHash) {
+      console.error(
+        "warning: Notice schema not declared/loaded — `situations notices` will not work until re-init on Mini or pass --notice-schema-hash.",
+      );
+    }
+  }
   return 0;
 }
 
@@ -311,9 +415,25 @@ async function listCmd(rest: string[]): Promise<number> {
   } else if (parsed.values.json) {
     console.log(JSON.stringify(visible, null, 2));
   } else {
+    const banner = await recentNoticesBanner(node, cfg);
+    if (banner) console.log(banner);
     console.log(renderList(visible));
   }
   return 0;
+}
+
+async function recentNoticesBanner(
+  node: ReturnType<typeof loadCtx>["node"],
+  cfg: Config,
+): Promise<string | null> {
+  if (!hasNoticeSchema(cfg)) return null;
+  try {
+    const notices = filterNotices(await listNotices(node, cfg), { since: "2h" });
+    if (notices.length === 0) return null;
+    return `${notices.length} notice(s) in last 2h — run: situations notices --since 2h`;
+  } catch {
+    return null;
+  }
 }
 
 async function showCmd(rest: string[]): Promise<number> {
@@ -387,10 +507,6 @@ async function preflightCmd(rest: string[]): Promise<number> {
     automation: parsed.values.automation,
   });
   if (fields.length > 0) {
-    // Project over the blocking situations: each row is the blocking
-    // situation's fields plus the block's reason/action/message, so
-    // `preflight --action X --field slug,reason` needs no JSON parse. No
-    // blocks (allowed) prints nothing; exit code is unchanged.
     const rows: FieldProjectionSource[] = result.blocks.map((block) => ({
       ...(block.situation as unknown as FieldProjectionSource),
       reason: block.reason,
@@ -404,6 +520,211 @@ async function preflightCmd(rest: string[]): Promise<number> {
     console.log(renderPreflight(result));
   }
   return result.ok ? 0 : 3;
+}
+
+async function noticeCmd(rest: string[]): Promise<number> {
+  const sub = rest[0];
+  if (sub === "help" || sub === "--help" || sub === "-h") {
+    console.log(usageFor("notice"));
+    return 0;
+  }
+  if (sub === "put") return await noticePutCmd(rest.slice(1));
+  if (sub === "show") return await noticeShowCmd(rest.slice(1));
+
+  // Create form with flags.
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      title: { type: "string" },
+      kind: { type: "string" },
+      summary: { type: "string" },
+      system: { type: "string", multiple: true },
+      app: { type: "string", multiple: true },
+      actor: { type: "string" },
+      "related-situation": { type: "string" },
+      "severity-hint": { type: "string" },
+      slug: { type: "string" },
+      at: { type: "string" },
+      "expires-at": { type: "string" },
+      "expires-hours": { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("notice"));
+    return 0;
+  }
+  if (!parsed.values.title) {
+    throw new FsituationsError({
+      code: "missing_title",
+      message: "Missing --title (or use `situations notice put <file>`).",
+      hint: 'Example: situations notice --title "LastDB upgraded" --kind upgrade --system lastdbd',
+    });
+  }
+
+  const { cfg, node } = loadCtx({ configPath: parsed.values.config });
+  requireNoticeSchema(cfg);
+
+  let expires_at = parsed.values["expires-at"];
+  if (!expires_at && parsed.values["expires-hours"]) {
+    const hours = Number(parsed.values["expires-hours"]);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      throw new FsituationsError({
+        code: "invalid_expires_hours",
+        message: `--expires-hours must be a positive number (got "${parsed.values["expires-hours"]}").`,
+      });
+    }
+    const atMs = parsed.values.at ? Date.parse(parsed.values.at) : Date.now();
+    const base = Number.isFinite(atMs) ? atMs : Date.now();
+    expires_at = new Date(base + hours * 3_600_000).toISOString();
+  }
+
+  const input: NoticeInput = {
+    slug: parsed.values.slug,
+    title: parsed.values.title,
+    kind: parsed.values.kind as NoticeInput["kind"],
+    summary: parsed.values.summary,
+    scope_systems: parsed.values.system,
+    scope_apps: parsed.values.app,
+    actor: parsed.values.actor,
+    related_situation: parsed.values["related-situation"],
+    severity_hint: parsed.values["severity-hint"] as NoticeInput["severity_hint"],
+    at: parsed.values.at,
+    expires_at,
+  };
+
+  const result = await upsertNotice(node, cfg, input);
+  if (parsed.values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`${result.action} notice ${result.notice.slug}`);
+  }
+  return 0;
+}
+
+async function noticePutCmd(rest: string[]): Promise<number> {
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: true,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("notice"));
+    return 0;
+  }
+  const file = parsed.positionals[0];
+  if (!file) {
+    throw new FsituationsError({
+      code: "missing_input",
+      message: "Missing JSON file path.",
+      hint: "Use `situations notice put <file>` or `situations notice put -` for stdin.",
+    });
+  }
+  const body = file === "-" ? await new Response(Bun.stdin.stream()).text() : readFileSync(file, "utf8");
+  const raw = JSON.parse(body) as NoticeInput;
+  const { cfg, node } = loadCtx({ configPath: parsed.values.config });
+  requireNoticeSchema(cfg);
+  // Validate early so bad JSON fails before network.
+  normalizeNotice(raw);
+  const result = await upsertNotice(node, cfg, raw);
+  if (parsed.values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`${result.action} notice ${result.notice.slug}`);
+  }
+  return 0;
+}
+
+async function noticeShowCmd(rest: string[]): Promise<number> {
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      field: { type: "string", multiple: true },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: true,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("notice"));
+    return 0;
+  }
+  const slug = parsed.positionals[0];
+  if (!slug) {
+    throw new FsituationsError({ code: "missing_slug", message: "Missing notice slug." });
+  }
+  const fields = parseFieldProjection(parsed.values.field);
+  const { cfg, node } = loadCtx({ configPath: parsed.values.config });
+  requireNoticeSchema(cfg);
+  const notice = await requireNotice(node, cfg, slug);
+  if (fields.length > 0) {
+    printFieldProjection([notice as unknown as FieldProjectionSource], fields, (line) =>
+      console.log(line),
+    );
+  } else {
+    console.log(parsed.values.json ? JSON.stringify(notice, null, 2) : renderNotice(notice));
+  }
+  return 0;
+}
+
+async function noticesCmd(rest: string[]): Promise<number> {
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      all: { type: "boolean", default: false },
+      since: { type: "string" },
+      system: { type: "string" },
+      app: { type: "string" },
+      kind: { type: "string" },
+      field: { type: "string", multiple: true },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("notices"));
+    return 0;
+  }
+  const fields = parseFieldProjection(parsed.values.field);
+  const { cfg, node } = loadCtx({ configPath: parsed.values.config });
+  requireNoticeSchema(cfg);
+  const all = await listNotices(node, cfg);
+  const visible = filterNotices(all, {
+    all: parsed.values.all,
+    since: parsed.values.since,
+    system: parsed.values.system,
+    app: parsed.values.app,
+    kind: parsed.values.kind,
+  });
+  if (fields.length > 0) {
+    printFieldProjection(visible as unknown as FieldProjectionSource[], fields, (line) =>
+      console.log(line),
+    );
+  } else if (parsed.values.json) {
+    console.log(JSON.stringify(visible, null, 2));
+  } else {
+    console.log(renderNoticesList(visible));
+  }
+  return 0;
+}
+
+function requireNoticeSchema(cfg: Config): void {
+  if (hasNoticeSchema(cfg)) return;
+  throw new FsituationsError({
+    code: "notice_schema_missing",
+    message: "No Notice schema hash in config.",
+    hint: "Run `situations init` (re-declares Notice on Mini) or pass --notice-schema-hash.",
+  });
 }
 
 async function listSituationsFromConfig(configPath?: string): Promise<Situation[]> {

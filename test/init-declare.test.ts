@@ -3,9 +3,10 @@ import { describe, expect, test } from "bun:test";
 import { FsituationsError, type NodeClient } from "../src/client.ts";
 import {
   resolveLoadedSituationHash,
+  resolveOrDeclareSchemaHashes,
   resolveOrDeclareSituationHash,
 } from "../src/init-schema.ts";
-import { OWNER_APP_ID, situationSchema } from "../src/schemas.ts";
+import { OWNER_APP_ID, noticeSchema, situationSchema } from "../src/schemas.ts";
 
 function mockNode(partial: Partial<NodeClient>): NodeClient {
   return {
@@ -62,6 +63,12 @@ describe("resolveOrDeclareSituationHash", () => {
           owner_app_id: OWNER_APP_ID,
           fields: [...situationSchema.schema.fields],
         },
+        {
+          name: "notice-already-loaded",
+          descriptive_name: noticeSchema.schema.descriptive_name,
+          owner_app_id: OWNER_APP_ID,
+          fields: [...noticeSchema.schema.fields],
+        },
       ],
       declareAppSchema: async () => {
         declared += 1;
@@ -78,22 +85,25 @@ describe("resolveOrDeclareSituationHash", () => {
   });
 
   test("declares locally when nothing is loaded", async () => {
+    const declaredNames: string[] = [];
     const node = mockNode({
       listSchemas: async () => [],
       declareAppSchema: async (appId, schema) => {
         expect(appId).toBe(OWNER_APP_ID);
-        expect(schema.name).toBe(situationSchema.schema.name);
+        declaredNames.push(String(schema.name));
+        const name = String(schema.name);
         return {
           app_id: OWNER_APP_ID,
-          schema: "fsituations/Situation",
-          canonical: "minted-canonical-hash",
+          schema: `fsituations/${name}`,
+          canonical: `minted-${name.toLowerCase()}-hash`,
           resolution: "mint",
         };
       },
     });
     expect(await resolveOrDeclareSituationHash(node, { quiet: true })).toBe(
-      "minted-canonical-hash",
+      "minted-situation-hash",
     );
+    expect(declaredNames).toEqual(["Situation", "Notice"]);
   });
 
   test("returns null when declare-schema is unsupported (404)", async () => {
@@ -116,5 +126,28 @@ describe("resolveOrDeclareSituationHash", () => {
     await expect(resolveOrDeclareSituationHash(node, { quiet: true })).rejects.toMatchObject({
       code: "http_500",
     });
+  });
+});
+
+describe("resolveOrDeclareSchemaHashes", () => {
+  test("returns both hashes when both already loaded", async () => {
+    const node = mockNode({
+      listSchemas: async () => [
+        {
+          name: "sit-hash",
+          descriptive_name: situationSchema.schema.descriptive_name,
+          owner_app_id: OWNER_APP_ID,
+          fields: [...situationSchema.schema.fields],
+        },
+        {
+          name: "notice-hash",
+          descriptive_name: noticeSchema.schema.descriptive_name,
+          owner_app_id: OWNER_APP_ID,
+          fields: [...noticeSchema.schema.fields],
+        },
+      ],
+    });
+    const hashes = await resolveOrDeclareSchemaHashes(node, { quiet: true });
+    expect(hashes).toEqual({ situation: "sit-hash", notice: "notice-hash" });
   });
 });

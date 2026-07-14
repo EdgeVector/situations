@@ -34,6 +34,19 @@ export type SituationStatus = (typeof STATUS_VALUES)[number];
 export const SEVERITY_VALUES = ["p0", "p1", "p2", "p3"] as const;
 export type Severity = (typeof SEVERITY_VALUES)[number];
 
+export const NOTICE_KIND_VALUES = [
+  "upgrade",
+  "restart",
+  "deploy",
+  "config",
+  "cutover",
+  "other",
+] as const;
+export type NoticeKind = (typeof NOTICE_KIND_VALUES)[number];
+
+export const NOTICE_SEVERITY_HINT_VALUES = ["info", "warn"] as const;
+export type NoticeSeverityHint = (typeof NOTICE_SEVERITY_HINT_VALUES)[number];
+
 export const SITUATION_FIELDS = [
   "slug",
   "title",
@@ -58,7 +71,24 @@ export const SITUATION_FIELDS = [
   "expires_at",
 ] as const;
 
-const ARRAY_FIELDS = [
+export const NOTICE_FIELDS = [
+  "slug",
+  "kind",
+  "title",
+  "summary",
+  "at",
+  "scope_systems",
+  "scope_apps",
+  "actor",
+  "related_situation",
+  "severity_hint",
+  "expires_at",
+  "created_at",
+  "links_kanban",
+  "links_brain",
+] as const;
+
+const SITUATION_ARRAY_FIELDS = [
   "scope_systems",
   "scope_repos",
   "scope_routines",
@@ -66,6 +96,13 @@ const ARRAY_FIELDS = [
   "blocked_actions",
   "allowed_actions",
   "requires_human_clearance",
+  "links_kanban",
+  "links_brain",
+] as const;
+
+const NOTICE_ARRAY_FIELDS = [
+  "scope_systems",
+  "scope_apps",
   "links_kanban",
   "links_brain",
 ] as const;
@@ -98,7 +135,7 @@ export const situationSchema: AddSchemaRequest = {
     schema_type: "Hash",
     key: { hash_field: "slug" },
     fields: [...SITUATION_FIELDS],
-    field_types: fieldTypes(SITUATION_FIELDS, ARRAY_FIELDS),
+    field_types: fieldTypes(SITUATION_FIELDS, SITUATION_ARRAY_FIELDS),
     field_descriptions: {
       slug: "stable url-style id",
       title: "one-line situation name",
@@ -132,12 +169,56 @@ export const situationSchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export const RECORD_TYPES = ["situation"] as const;
+/**
+ * Non-blocking agent-impact FYI events (upgrades, restarts, cutovers).
+ * Never participates in preflight. Default list hides expired rows.
+ */
+export const noticeSchema: AddSchemaRequest = {
+  schema: {
+    name: "Notice",
+    owner_app_id: OWNER_APP_ID,
+    descriptive_name: "Notice",
+    purpose_statement:
+      "A time-stamped non-blocking FYI about an agent-impacting change (upgrade, restart, deploy) so other agents can attribute flapping instead of opening false incidents",
+    schema_type: "Hash",
+    key: { hash_field: "slug" },
+    fields: [...NOTICE_FIELDS],
+    field_types: fieldTypes(NOTICE_FIELDS, NOTICE_ARRAY_FIELDS),
+    field_descriptions: {
+      slug: "stable url-style id, unique per event",
+      kind: "upgrade|restart|deploy|config|cutover|other",
+      title: "one-line notice headline",
+      summary: "short what-happened text agents can quote when diagnosing",
+      at: "RFC 3339 timestamp when the event happened",
+      scope_systems: "systems affected (e.g. lastdbd, forgejo)",
+      scope_apps: "agent-facing apps affected (e.g. brain, kanban, situations)",
+      actor: "who/what did it (skill:lastdb-safe-upgrade, agent id, human)",
+      related_situation: "optional Situation slug if this pairs with posture",
+      severity_hint: "info|warn — display only; never blocks preflight",
+      expires_at: "RFC 3339; default list hides notices past this time",
+      created_at: "RFC 3339 when the notice was recorded",
+      links_kanban: "related kanban card slugs",
+      links_brain: "related brain record slugs",
+    },
+    field_classifications: {
+      title: ["word"],
+      summary: ["word"],
+    },
+    field_data_classifications: generalClassifications(NOTICE_FIELDS),
+  },
+  mutation_mappers: {},
+};
+
+export const RECORD_TYPES = ["situation", "notice"] as const;
 export type RecordType = (typeof RECORD_TYPES)[number];
 
-export const UNIQUE_SCHEMAS = [{ key: "situation" as const, schema: situationSchema }];
+export const UNIQUE_SCHEMAS = [
+  { key: "situation" as const, schema: situationSchema },
+  { key: "notice" as const, schema: noticeSchema },
+];
 
 export function fieldsFor(type: RecordType): string[] {
-  if (type !== "situation") throw new Error(`Unknown record type: ${type}`);
-  return [...SITUATION_FIELDS];
+  if (type === "situation") return [...SITUATION_FIELDS];
+  if (type === "notice") return [...NOTICE_FIELDS];
+  throw new Error(`Unknown record type: ${type}`);
 }

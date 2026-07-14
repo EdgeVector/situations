@@ -1,7 +1,7 @@
 {
   "name": "situations",
   "version": "0.1.0",
-  "description": "Situations app over LastDB: active operational posture, phases, and agent preflight policy.",
+  "description": "Situations app over LastDB: active operational posture, phases, agent preflight policy, and non-blocking agent-impact notices.",
   "private": true,
   "license": "MIT",
   "type": "module",

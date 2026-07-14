@@ -1,0 +1,11 @@
+{
+  "slug": "notice-upgrade-lastdb-example",
+  "kind": "upgrade",
+  "title": "LastDB upgraded (example notice)",
+  "summary": "brew lastdb upgraded; brief socket blips and busy-node errors are expected for ~10–15 minutes. Do not open a new incident or restart the primary brain for flapping alone.",
+  "scope_systems": ["lastdbd", "primary-brain"],
+  "scope_apps": ["brain", "kanban", "situations"],
+  "actor": "skill:lastdb-safe-upgrade",
+  "severity_hint": "info",
+  "related_situation": ""
+}

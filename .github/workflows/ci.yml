@@ -8,5 +8,4 @@ jobs:
   inert:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "GitHub mirror — no Actions. Use LastGit (lastdb:///ci.yml_SLUG) + code-node forge."
-
+      - run: echo "GitHub mirror — no Actions. Use LastGit lastdb:///situations + code-node forge."

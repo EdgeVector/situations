@@ -42,6 +42,11 @@ import {
   type NoticeInput,
 } from "./notice.ts";
 import { resolveOrDeclareSchemaHashes } from "./init-schema.ts";
+import {
+  deliverPostureStatus,
+  publishPostureStatus,
+  type DeliveryRecipient,
+} from "./publish-status.ts";
 import { noticeSchema, situationSchema } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
@@ -60,6 +65,8 @@ Commands:
   preflight            check whether an action is blocked (--action plus scope)
   notice               post a non-blocking agent-impact FYI notice
   notices              list recent notices (never blocks preflight)
+  publish-status       write slim posture+notices snapshot to LastDB (--json)
+  deliver-status       publish + stage a situations slice delivery; --approve sends it
   version              print version
   help                 print this help
 
@@ -210,6 +217,40 @@ Examples:
       return `situations schema [--type situation|notice|all] [--json]
 
 Print the schema payload(s) for publishing/loading. Default is both.`;
+    case "publish-status":
+      return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
+
+Write a privacy-safe admin deliverable snapshot to the local LastDB Mini socket:
+  - fsituations/SituationAdminSnapshot key posture-latest
+  - fsituations/SituationAdminPosture per active/monitoring situation
+  - fsituations/SituationAdminNotice per recent notice (default --since 24h)
+
+Fields are intentionally slim (posture: slug/severity/status/summary/blocked_actions;
+notices: kind/at/title/summary/systems). Full phases_json and preflight bodies are
+never published.
+
+Examples:
+  situations publish-status --json
+  situations publish-status --since 2h --notice-limit 20
+  situations publish-status --dry-run --json`;
+    case "deliver-status":
+      return `situations deliver-status [options]
+
+Publish the slim posture+notices slice, then stage a lastdb.slice.v1 delivery
+to the admin kanban-consumer (or documented twin). Pass --approve to send.
+
+Recipient keys are operational inputs (same bundle as kanban-consumer enroll).
+Do not commit them:
+
+  --recipient-pubkey / SITUATIONS_ADMIN_RECIPIENT_PUBKEY
+  --messaging-public-key / SITUATIONS_ADMIN_MESSAGING_PUBLIC_KEY
+  --messaging-pseudonym / SITUATIONS_ADMIN_MESSAGING_PSEUDONYM
+  --recipient-name / SITUATIONS_ADMIN_RECIPIENT_NAME
+
+Examples:
+  situations deliver-status --dry-run --json
+  situations deliver-status --max-records 50
+  situations deliver-status --approve --max-records 50`;
     default:
       return TOP_HELP;
   }
@@ -243,6 +284,10 @@ async function main(argv: string[]): Promise<number> {
       return await noticeCmd(rest);
     case "notices":
       return await noticesCmd(rest);
+    case "publish-status":
+      return await publishStatusCmd(rest);
+    case "deliver-status":
+      return await deliverStatusCmd(rest);
     default:
       throw new FsituationsError({
         code: "unknown_command",
@@ -754,6 +799,171 @@ function requireNoticeSchema(cfg: Config): void {
     message: "No Notice schema hash in config.",
     hint: "Run `situations init` (re-declares Notice on Mini) or pass --notice-schema-hash.",
   });
+}
+
+async function publishStatusCmd(rest: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      since: { type: "string" },
+      "notice-limit": { type: "string" },
+      config: { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (values.help) {
+    console.log(usageFor("publish-status"));
+    return 0;
+  }
+  const noticeLimit = parsePositiveIntFlag(values["notice-limit"], "--notice-limit");
+  if (noticeLimit instanceof Error) {
+    console.error(noticeLimit.message);
+    return 2;
+  }
+
+  const { cfg, node } = loadCtx({ configPath: values.config });
+  const result = await publishPostureStatus({
+    node,
+    cfg,
+    dryRun: values["dry-run"] === true,
+    noticeSince: values.since,
+    noticeLimit,
+    socketPath: resolveSocketPath(cfg),
+  });
+  if (values.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  const action = result.dryRun ? "DRY-RUN" : "PUBLISHED";
+  console.log(
+    `${action} situations posture snapshot captured_at=${result.capturedAt} posture=${result.posture.length} notices=${result.notices.length}`,
+  );
+  console.log(
+    `schemas snapshot=${result.schemaHashes.snapshot} posture=${result.schemaHashes.posture} notice=${result.schemaHashes.notice}`,
+  );
+  return 0;
+}
+
+async function deliverStatusCmd(rest: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      approve: { type: "boolean" },
+      since: { type: "string" },
+      "notice-limit": { type: "string" },
+      "max-records": { type: "string" },
+      "recipient-pubkey": { type: "string" },
+      "recipient-name": { type: "string" },
+      "messaging-public-key": { type: "string" },
+      "messaging-pseudonym": { type: "string" },
+      config: { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (values.help) {
+    console.log(usageFor("deliver-status"));
+    return 0;
+  }
+  const noticeLimit = parsePositiveIntFlag(values["notice-limit"], "--notice-limit");
+  if (noticeLimit instanceof Error) {
+    console.error(noticeLimit.message);
+    return 2;
+  }
+  const maxRecords = parsePositiveIntFlag(values["max-records"], "--max-records");
+  if (maxRecords instanceof Error) {
+    console.error(maxRecords.message);
+    return 2;
+  }
+
+  const recipient: DeliveryRecipient = {
+    recipientPubkey: firstString(
+      values["recipient-pubkey"],
+      process.env.SITUATIONS_ADMIN_RECIPIENT_PUBKEY,
+    ),
+    messagingPublicKey: firstString(
+      values["messaging-public-key"],
+      process.env.SITUATIONS_ADMIN_MESSAGING_PUBLIC_KEY,
+    ),
+    messagingPseudonym: firstString(
+      values["messaging-pseudonym"],
+      process.env.SITUATIONS_ADMIN_MESSAGING_PSEUDONYM,
+    ),
+    recipientDisplayName: firstString(
+      values["recipient-name"],
+      process.env.SITUATIONS_ADMIN_RECIPIENT_NAME,
+    ),
+  };
+  const missing = [
+    ["--recipient-pubkey", recipient.recipientPubkey],
+    ["--messaging-public-key", recipient.messagingPublicKey],
+    ["--messaging-pseudonym", recipient.messagingPseudonym],
+  ].filter(([, value]) => !value);
+  if (missing.length > 0) {
+    console.error(
+      `missing ${missing.map(([flag]) => flag).join(", ")} (or SITUATIONS_ADMIN_RECIPIENT_PUBKEY / SITUATIONS_ADMIN_MESSAGING_PUBLIC_KEY / SITUATIONS_ADMIN_MESSAGING_PSEUDONYM)`,
+    );
+    return 2;
+  }
+
+  const { cfg, node } = loadCtx({ configPath: values.config });
+  const result = await deliverPostureStatus({
+    node,
+    cfg,
+    recipient,
+    approve: values.approve === true,
+    dryRun: values["dry-run"] === true,
+    noticeSince: values.since,
+    noticeLimit,
+    maxRecords,
+    socketPath: resolveSocketPath(cfg),
+  });
+  if (values.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  if (result.dryRun) {
+    console.log(
+      `DRY-RUN situations delivery posture=${result.posture.length} notices=${result.notices.length} max_records=${result.deliveryRequest.max_records}`,
+    );
+    console.log(
+      `schemas snapshot=${result.schemaHashes.snapshot} posture=${result.schemaHashes.posture} notice=${result.schemaHashes.notice}`,
+    );
+    return 0;
+  }
+  if (!result.staged) {
+    console.error("delivery stage returned no result");
+    return 1;
+  }
+  if (result.approved) {
+    console.log(
+      `DELIVERED situations posture delivery_id=${result.approved.deliveryId} shared=${result.approved.shared} message_type=${result.approved.messageType}`,
+    );
+  } else {
+    console.log(
+      `STAGED situations posture delivery_id=${result.staged.deliveryId} records=${result.staged.recordCount}; re-run with --approve to send`,
+    );
+  }
+  console.log(
+    `schemas snapshot=${result.schemaHashes.snapshot} posture=${result.schemaHashes.posture} notice=${result.schemaHashes.notice}`,
+  );
+  return 0;
+}
+
+function parsePositiveIntFlag(value: string | undefined, name: string): number | undefined | Error {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return new Error(`invalid ${name} ${value}`);
+  return parsed;
+}
+
+function firstString(...values: Array<string | undefined>): string {
+  return values.find((value) => value && value.trim())?.trim() ?? "";
 }
 
 async function listSituationsFromConfig(configPath?: string): Promise<Situation[]> {

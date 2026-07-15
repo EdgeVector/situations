@@ -160,6 +160,21 @@ situations preflight --action enable-ci --repo EdgeVector/fold
 If preflight blocks the action or requires human clearance, stop and cite the
 Situation slug.
 
+## Observability
+
+The CLI initializes Sentry only when `OBS_SENTRY_DSN` is set. Without a DSN,
+startup and command behavior are unchanged. Unexpected top-level failures are
+reported with `service=situations-cli`; typed Situations/config errors keep
+their normal stderr and exit-code paths.
+
+Supported environment tags:
+
+```bash
+OBS_SENTRY_DSN=<resolved-at-launch>   # resolve from LastSecrets; do not commit raw DSNs
+OBS_SENTRY_ENVIRONMENT=dev            # optional
+OBS_SENTRY_RELEASE=situations@0.1.0   # optional; defaults to package version
+```
+
 ## Commands
 
 ```bash

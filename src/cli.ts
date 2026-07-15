@@ -44,6 +44,8 @@ import {
 import { resolveOrDeclareSchemaHashes } from "./init-schema.ts";
 import { noticeSchema, situationSchema } from "./schemas.ts";
 
+type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
+
 export const TOP_HELP = `situations — current operational posture + agent-impact notices over LastDB
 
 Usage:
@@ -248,6 +250,21 @@ async function main(argv: string[]): Promise<number> {
         hint: "Run `situations help`.",
       });
   }
+}
+
+async function initCliSentry(): Promise<CaptureSentryException> {
+  if (!process.env.OBS_SENTRY_DSN?.trim()) {
+    return async () => {};
+  }
+  const sentry = await import("./observability/sentry.ts");
+  await sentry.initSentry({
+    service: "situations-cli",
+    env: {
+      ...process.env,
+      OBS_SENTRY_RELEASE: process.env.OBS_SENTRY_RELEASE ?? `situations@${pkg.version}`,
+    },
+  });
+  return sentry.captureSentryException;
 }
 
 function schemaCmd(rest: string[]): number {
@@ -796,7 +813,13 @@ function renderPreflight(result: ReturnType<typeof preflight>): string {
     .join("\n");
 }
 
-main(Bun.argv.slice(2))
+let captureTopLevel: CaptureSentryException = async () => {};
+
+initCliSentry()
+  .then((capture) => {
+    captureTopLevel = capture;
+    return main(Bun.argv.slice(2));
+  })
   .then((code) => process.exit(code))
   .catch((err) => {
     if (
@@ -808,6 +831,8 @@ main(Bun.argv.slice(2))
       if (err instanceof FsituationsError && err.hint) console.error(`hint: ${err.hint}`);
       process.exit(err instanceof FsituationsError && err.code.startsWith("missing") ? 2 : 1);
     }
-    console.error(err instanceof Error ? err.stack ?? err.message : String(err));
-    process.exit(1);
+    void captureTopLevel(err, { entrypoint: "cli", top_level: "true" }).finally(() => {
+      console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+      process.exit(1);
+    });
   });

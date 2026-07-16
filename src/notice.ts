@@ -26,9 +26,15 @@ export type Notice = {
   links_brain: string[];
 };
 
-export type NoticeInput = Partial<Notice> & {
+type NoticeListField = "scope_systems" | "scope_apps" | "links_kanban" | "links_brain";
+
+export type NoticeInput = Omit<Partial<Notice>, NoticeListField> & {
   slug?: string;
   title?: string;
+  scope_systems?: unknown;
+  scope_apps?: unknown;
+  links_kanban?: unknown;
+  links_brain?: unknown;
 };
 
 export type ListNoticesOptions = {

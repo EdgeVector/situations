@@ -72,6 +72,22 @@ describe("normalizeNotice", () => {
     expect(notice.links_kanban).toEqual(["card-a", "card-b"]);
     expect(notice.links_brain).toEqual(["note-a"]);
   });
+
+  test("normalizes list fields from comma-separated strings", () => {
+    const notice = normalizeNotice({
+      slug: "notice-list-input",
+      title: "List input",
+      scope_systems: "lastdbd, primary-brain, lastdbd",
+      scope_apps: "brain, kanban",
+      links_kanban: "card-one, card-two, card-one",
+      links_brain: "sop-one",
+    });
+
+    expect(notice.scope_systems).toEqual(["lastdbd", "primary-brain"]);
+    expect(notice.scope_apps).toEqual(["brain", "kanban"]);
+    expect(notice.links_kanban).toEqual(["card-one", "card-two"]);
+    expect(notice.links_brain).toEqual(["sop-one"]);
+  });
 });
 
 describe("parseSinceDuration", () => {

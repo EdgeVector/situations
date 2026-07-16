@@ -130,10 +130,24 @@ Install the user PATH shim from this checkout:
 bun run install-shim
 ```
 
-The installer creates `~/.local/bin/situations` by default, or `~/bin` when
-that is the user bin directory already on PATH. It also installs the
-`fsituations` compatibility alias during the migration. Set
+The installer refreshes the durable host-track checkout
+`~/.host-track/situations` from `lastdb:///situations` and creates
+`~/.local/bin/situations` by default. It also installs the `fsituations`
+compatibility alias during the migration. Set `SITUATIONS_INSTALL_BIN` or
 `FSITUATIONS_INSTALL_BIN` to choose another directory.
+
+To inspect the current install:
+
+```bash
+situations which --json
+situations which --check
+```
+
+`which --check` exits nonzero when the running checkout is not under
+`~/.host-track/situations`.
+
+For direct legacy linking from the current checkout, set
+`SITUATIONS_INSTALL_DIRECT=1` before running the installer.
 
 If the shim is not installed but this checkout is available, use the fallback:
 

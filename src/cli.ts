@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from "node:util";
-import { readFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
 import { FsituationsError, newNodeClient } from "./client.ts";
@@ -67,6 +68,7 @@ Commands:
   notices              list recent notices (never blocks preflight)
   publish-status       write slim posture+notices snapshot to LastDB (--json)
   deliver-status       publish + stage a situations slice delivery; --approve sends it
+  which                print install/host-track path information
   version              print version
   help                 print this help
 
@@ -251,6 +253,11 @@ Examples:
   situations deliver-status --dry-run --json
   situations deliver-status --max-records 50
   situations deliver-status --approve --max-records 50`;
+    case "which":
+      return `situations which [--json] [--check]
+
+Print the executable path and checkout root for the current situations install.
+--check exits nonzero when the executable does not resolve under ~/.host-track/situations.`;
     case "version":
       return `situations version
 
@@ -306,6 +313,8 @@ async function main(argv: string[]): Promise<number> {
       return await publishStatusCmd(rest);
     case "deliver-status":
       return await deliverStatusCmd(rest);
+    case "which":
+      return whichCmd(rest);
     default:
       throw new FsituationsError({
         code: "unknown_command",
@@ -313,6 +322,47 @@ async function main(argv: string[]): Promise<number> {
         hint: "Run `situations help`.",
       });
   }
+}
+
+function whichCmd(rest: string[]): number {
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      json: { type: "boolean", default: false },
+      check: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("which"));
+    return 0;
+  }
+
+  const sourcePath = realpathSync(new URL(import.meta.url));
+  const checkoutRoot = resolve(dirname(sourcePath), "..");
+  const expectedRootRaw = resolve(Bun.env.HOME ?? "", ".host-track", "situations");
+  const expectedRoot = existsSync(expectedRootRaw) ? realpathSync(expectedRootRaw) : expectedRootRaw;
+  const inHostTrack = checkoutRoot === expectedRoot || checkoutRoot.startsWith(`${expectedRoot}/`);
+  const result = {
+    app: "situations",
+    command: "situations",
+    source_path: sourcePath,
+    checkout_root: checkoutRoot,
+    expected_host_track: expectedRoot,
+    in_host_track: inHostTrack,
+  };
+
+  if (parsed.values.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`source_path=${sourcePath}`);
+    console.log(`checkout_root=${checkoutRoot}`);
+    console.log(`expected_host_track=${expectedRoot}`);
+    console.log(`in_host_track=${inHostTrack}`);
+  }
+
+  return parsed.values.check && !inHostTrack ? 1 : 0;
 }
 
 async function initCliSentry(): Promise<CaptureSentryException> {

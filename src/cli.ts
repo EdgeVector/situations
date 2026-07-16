@@ -90,7 +90,7 @@ Examples:
 
 Compatibility: fsituations remains an alias during the migration.`;
 
-function usageFor(command: string): string {
+export function usageFor(command: string): string {
   switch (command) {
     case "init":
       return `situations init
@@ -251,6 +251,14 @@ Examples:
   situations deliver-status --dry-run --json
   situations deliver-status --max-records 50
   situations deliver-status --approve --max-records 50`;
+    case "version":
+      return `situations version
+
+Print the package version.`;
+    case "help":
+      return `situations help [command]
+
+Print top-level help, or command-specific help when a command is provided.`;
     default:
       return TOP_HELP;
   }
@@ -258,11 +266,21 @@ Examples:
 
 async function main(argv: string[]): Promise<number> {
   const [command = "help", ...rest] = argv;
-  if (command === "help" || command === "--help" || command === "-h") {
-    console.log(rest[0] ? usageFor(rest[0]) : TOP_HELP);
+  if (command === "help") {
+    console.log(
+      rest[0] ? usageFor(rest[0] === "--help" || rest[0] === "-h" ? "help" : rest[0]) : TOP_HELP,
+    );
+    return 0;
+  }
+  if (command === "--help" || command === "-h") {
+    console.log(TOP_HELP);
     return 0;
   }
   if (command === "version" || command === "--version" || command === "-V") {
+    if (rest.includes("--help") || rest.includes("-h")) {
+      console.log(usageFor("version"));
+      return 0;
+    }
     console.log(pkg.version);
     return 0;
   }
@@ -1023,26 +1041,28 @@ function renderPreflight(result: ReturnType<typeof preflight>): string {
     .join("\n");
 }
 
-let captureTopLevel: CaptureSentryException = async () => {};
+if (import.meta.main) {
+  let captureTopLevel: CaptureSentryException = async () => {};
 
-initCliSentry()
-  .then((capture) => {
-    captureTopLevel = capture;
-    return main(Bun.argv.slice(2));
-  })
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    if (
-      err instanceof FsituationsError ||
-      err instanceof ConfigMissingError ||
-      err instanceof ConfigInvalidError
-    ) {
-      console.error(`situations: ${err.message}`);
-      if (err instanceof FsituationsError && err.hint) console.error(`hint: ${err.hint}`);
-      process.exit(err instanceof FsituationsError && err.code.startsWith("missing") ? 2 : 1);
-    }
-    void captureTopLevel(err, { entrypoint: "cli", top_level: "true" }).finally(() => {
-      console.error(err instanceof Error ? err.stack ?? err.message : String(err));
-      process.exit(1);
+  initCliSentry()
+    .then((capture) => {
+      captureTopLevel = capture;
+      return main(Bun.argv.slice(2));
+    })
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      if (
+        err instanceof FsituationsError ||
+        err instanceof ConfigMissingError ||
+        err instanceof ConfigInvalidError
+      ) {
+        console.error(`situations: ${err.message}`);
+        if (err instanceof FsituationsError && err.hint) console.error(`hint: ${err.hint}`);
+        process.exit(err instanceof FsituationsError && err.code.startsWith("missing") ? 2 : 1);
+      }
+      void captureTopLevel(err, { entrypoint: "cli", top_level: "true" }).finally(() => {
+        console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+        process.exit(1);
+      });
     });
-  });
+}

@@ -22,7 +22,7 @@ import {
   type FieldProjectionSource,
 } from "./field-projection.ts";
 import {
-  activeSituations,
+  listActiveSituationsIndexed,
   listSituations,
   preflight,
   rejectGlobalFleetScope,
@@ -35,6 +35,7 @@ import {
   filterNotices,
   hasNoticeSchema,
   listNotices,
+  listNoticesIndexed,
   normalizeNotice,
   renderNotice,
   renderNoticesList,
@@ -48,7 +49,7 @@ import {
   publishPostureStatus,
   type DeliveryRecipient,
 } from "./publish-status.ts";
-import { noticeSchema, situationSchema } from "./schemas.ts";
+import { indexSchema, noticeSchema, situationSchema } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
 
@@ -58,8 +59,8 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json (declares Situation + Notice schemas on Mini)
-  schema               print Situation and/or Notice schema JSON
+  init                 write ~/.situations/config.json (declares Situation + Notice + Index schemas on Mini)
+  schema               print Situation, Notice, and/or Index schema JSON
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
   show <slug>          show one situation (--json, --field)
@@ -216,9 +217,9 @@ Examples:
   situations notices --since 30m --system lastdbd
   situations notices --field slug,at,kind,title`;
     case "schema":
-      return `situations schema [--type situation|notice|all] [--json]
+      return `situations schema [--type situation|notice|index|all] [--json]
 
-Print the schema payload(s) for publishing/loading. Default is both.`;
+Print the schema payload(s) for publishing/loading. Default is all.`;
     case "publish-status":
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
@@ -398,12 +399,13 @@ function schemaCmd(rest: string[]): number {
   let payload: unknown;
   if (type === "situation") payload = situationSchema;
   else if (type === "notice") payload = noticeSchema;
-  else if (type === "all") payload = { situation: situationSchema, notice: noticeSchema };
+  else if (type === "index") payload = indexSchema;
+  else if (type === "all") payload = { situation: situationSchema, notice: noticeSchema, index: indexSchema };
   else {
     throw new FsituationsError({
       code: "invalid_type",
       message: `Unknown --type "${type}".`,
-      hint: "Use situation, notice, or all.",
+      hint: "Use situation, notice, index, or all.",
     });
   }
   console.log(JSON.stringify(payload, null, 2));
@@ -454,6 +456,7 @@ async function initCmd(rest: string[]): Promise<number> {
   });
   const situationHash = parsed.values["schema-hash"] ?? declared.situation;
   const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
+  const indexHash = declared.index;
 
   if (!situationHash) {
     throw new FsituationsError({
@@ -465,6 +468,7 @@ async function initCmd(rest: string[]): Promise<number> {
 
   const schemaHashes: Record<string, string> = { situation: situationHash };
   if (noticeHash) schemaHashes.notice = noticeHash;
+  if (indexHash) schemaHashes.index = indexHash;
 
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
@@ -479,6 +483,7 @@ async function initCmd(rest: string[]): Promise<number> {
     config: cfgPath,
     schemaHash: situationHash,
     noticeSchemaHash: noticeHash ?? null,
+    indexSchemaHash: indexHash ?? null,
     userHash: identity.userHash,
   };
   if (parsed.values.json) {
@@ -488,6 +493,11 @@ async function initCmd(rest: string[]): Promise<number> {
     if (!noticeHash) {
       console.error(
         "warning: Notice schema not declared/loaded — `situations notices` will not work until re-init on Mini or pass --notice-schema-hash.",
+      );
+    }
+    if (!indexHash) {
+      console.error(
+        "warning: Index schema not declared/loaded — list/preflight/notices will fall back to a full scan until re-init on Mini.",
       );
     }
   }
@@ -548,8 +558,11 @@ async function listCmd(rest: string[]): Promise<number> {
   }
   const fields = parseFieldProjection(parsed.values.field);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
-  const situations = await listSituations(node, cfg);
-  const visible = parsed.values.all ? situations : activeSituations(situations);
+  // `--all` is the explicit, rare opt-in for a full-history scan; the default
+  // path point-reads the active-situations index instead.
+  const visible = parsed.values.all
+    ? await listSituations(node, cfg)
+    : await listActiveSituationsIndexed(node, cfg);
   if (fields.length > 0) {
     printFieldProjection(visible as unknown as FieldProjectionSource[], fields, (line) =>
       console.log(line),
@@ -570,7 +583,7 @@ async function recentNoticesBanner(
 ): Promise<string | null> {
   if (!hasNoticeSchema(cfg)) return null;
   try {
-    const notices = filterNotices(await listNotices(node, cfg), { since: "2h" });
+    const notices = filterNotices(await listNoticesIndexed(node, cfg, { since: "2h" }), { since: "2h" });
     if (notices.length === 0) return null;
     return `${notices.length} notice(s) in last 2h — run: situations notices --since 2h`;
   } catch {
@@ -840,7 +853,10 @@ async function noticesCmd(rest: string[]): Promise<number> {
   const fields = parseFieldProjection(parsed.values.field);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
   requireNoticeSchema(cfg);
-  const all = await listNotices(node, cfg);
+  const all = await listNoticesIndexed(node, cfg, {
+    all: parsed.values.all,
+    since: parsed.values.since,
+  });
   const visible = filterNotices(all, {
     all: parsed.values.all,
     since: parsed.values.since,
@@ -1036,7 +1052,9 @@ function firstString(...values: Array<string | undefined>): string {
 
 async function listSituationsFromConfig(configPath?: string): Promise<Situation[]> {
   const { cfg, node } = loadCtx({ configPath });
-  return await listSituations(node, cfg);
+  // preflight() only ever looks at active/monitoring situations, so the
+  // indexed (cheap) read is always sufficient here.
+  return await listActiveSituationsIndexed(node, cfg);
 }
 
 function loadSituationFile(path: string): Situation {

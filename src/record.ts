@@ -1,6 +1,9 @@
 import { FsituationsError, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import { fieldsFor, SEVERITY_VALUES, STATUS_VALUES, type Severity, type SituationStatus } from "./schemas.ts";
+import { readIndexPayload, writeIndexPayload } from "./index-cache.ts";
+
+const ACTIVE_SITUATIONS_INDEX_KEY = "active_situations";
 
 export type PhaseState = "pending" | "active" | "complete" | "skipped";
 
@@ -320,12 +323,60 @@ export async function requireSituation(
   return situation;
 }
 
+/** Full-history scan of every Situation row (active, resolved, archived). Expensive — reserve for `--all` and index rebuilds. */
 export async function listSituations(node: NodeClient, cfg: Config): Promise<Situation[]> {
   const res = await node.queryAll({
     schemaHash: schemaHashFor("situation", cfg),
     fields: fieldsFor("situation"),
   });
   return res.results.map(rowToSituation).sort(compareSituations);
+}
+
+/**
+ * Cheap default read for preflight and `list`/`notices`: point-reads the
+ * `active_situations` index row instead of scanning every Situation ever
+ * filed. Falls back to one full scan (and seeds the index from it) when the
+ * index hasn't been declared/seeded yet — every call after that is a point
+ * read again.
+ */
+export async function listActiveSituationsIndexed(
+  node: NodeClient,
+  cfg: Config,
+  at: Date = new Date(),
+): Promise<Situation[]> {
+  const cached = await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY);
+  if (cached !== null) {
+    const restored = cached.map((s) => normalizeSituation(s, undefined, { touchUpdatedAt: false }));
+    return activeSituations(restored, at).sort(compareSituations);
+  }
+  const all = await listSituations(node, cfg);
+  await rebuildSituationsIndex(node, cfg, all);
+  return activeSituations(all, at);
+}
+
+export async function rebuildSituationsIndex(
+  node: NodeClient,
+  cfg: Config,
+  situations?: Situation[],
+): Promise<Situation[]> {
+  const all = situations ?? (await listSituations(node, cfg));
+  const active = activeSituations(all);
+  await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, active);
+  return active;
+}
+
+async function patchSituationsIndex(
+  node: NodeClient,
+  cfg: Config,
+  situation: Situation,
+): Promise<void> {
+  const cached = (await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY)) ?? [];
+  const withoutSlug = cached.filter((s) => s.slug !== situation.slug);
+  const isNowActive = activeSituations([situation]).length > 0;
+  const next = isNowActive ? [...withoutSlug, situation] : withoutSlug;
+  // Opportunistically drop any other entries that have since expired by clock
+  // alone (no explicit upsert needed to notice that).
+  await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, activeSituations(next));
 }
 
 export async function upsertSituation(
@@ -339,9 +390,11 @@ export async function upsertSituation(
   const hash = schemaHashFor("situation", cfg);
   if (existing) {
     await node.updateRecord({ schemaHash: hash, fields, keyHash: situation.slug });
+    await patchSituationsIndex(node, cfg, situation);
     return { situation, action: "updated" };
   }
   await node.createRecord({ schemaHash: hash, fields, keyHash: situation.slug });
+  await patchSituationsIndex(node, cfg, situation);
   return { situation, action: "created" };
 }
 

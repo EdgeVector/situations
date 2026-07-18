@@ -209,16 +209,48 @@ export const noticeSchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export const RECORD_TYPES = ["situation", "notice"] as const;
+export const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
+
+/**
+ * Small cached rollups (e.g. `active_situations`, `recent_notices`) so agent
+ * preflight and the default `list`/`notices` reads point-read one small row
+ * instead of a full-history scan of the Situation/Notice schemas. Optional:
+ * callers fall back to a full scan when this schema isn't declared/loaded yet
+ * (pre-upgrade config) or a given index row hasn't been seeded.
+ */
+export const indexSchema: AddSchemaRequest = {
+  schema: {
+    name: "Index",
+    owner_app_id: OWNER_APP_ID,
+    descriptive_name: "Index",
+    purpose_statement:
+      "Small cached rollups (active situations, recent notices) so agent preflight and default list/notices reads never full-scan the underlying Situation/Notice tables",
+    schema_type: "Hash",
+    key: { hash_field: "key" },
+    fields: [...INDEX_FIELDS],
+    field_types: fieldTypes(INDEX_FIELDS, []),
+    field_descriptions: {
+      key: "index name, e.g. active_situations | recent_notices",
+      payload_json: "JSON blob for this index; shape depends on key",
+      updated_at: "RFC 3339 timestamp of the last index rebuild/patch",
+    },
+    field_data_classifications: generalClassifications(INDEX_FIELDS),
+  },
+  mutation_mappers: {},
+};
+
+export const RECORD_TYPES = ["situation", "notice", "index"] as const;
 export type RecordType = (typeof RECORD_TYPES)[number];
 
 export const UNIQUE_SCHEMAS = [
   { key: "situation" as const, schema: situationSchema },
   { key: "notice" as const, schema: noticeSchema },
+  { key: "index" as const, schema: indexSchema },
 ];
 
 export function fieldsFor(type: RecordType): string[] {
   if (type === "situation") return [...SITUATION_FIELDS];
   if (type === "notice") return [...NOTICE_FIELDS];
+  if (type === "index") return [...INDEX_FIELDS];
   throw new Error(`Unknown record type: ${type}`);
 }

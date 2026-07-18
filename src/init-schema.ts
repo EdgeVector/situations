@@ -1,6 +1,7 @@
 import { FsituationsError, type NodeClient } from "./client.ts";
 import {
   OWNER_APP_ID,
+  indexSchema,
   noticeSchema,
   situationSchema,
   type AddSchemaRequest,
@@ -15,6 +16,7 @@ type SchemaTarget = {
 const TARGETS: SchemaTarget[] = [
   { key: "situation", schema: situationSchema },
   { key: "notice", schema: noticeSchema },
+  { key: "index", schema: indexSchema },
 ];
 
 /**

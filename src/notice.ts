@@ -8,6 +8,13 @@ import {
   type NoticeSeverityHint,
 } from "./schemas.ts";
 import { nowIso, validateSlug } from "./record.ts";
+import { readIndexPayload, writeIndexPayload } from "./index-cache.ts";
+
+const RECENT_NOTICES_INDEX_KEY = "recent_notices";
+// Covers the "situations notices --since 1h/2h/24h" hot path agents actually
+// use; anything asking further back than this falls back to a full scan.
+const RECENT_NOTICES_INDEX_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const RECENT_NOTICES_INDEX_MAX_ENTRIES = 500;
 
 export type Notice = {
   slug: string;
@@ -227,12 +234,66 @@ export async function requireNotice(node: NodeClient, cfg: Config, slug: string)
   return notice;
 }
 
+/** Full-history scan of every Notice row ever recorded. Expensive — reserve for `--all` / far-back `--since` and index rebuilds. */
 export async function listNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
   const res = await node.queryAll({
     schemaHash: schemaHashFor("notice", cfg),
     fields: fieldsFor("notice"),
   });
   return res.results.map(rowToNotice).sort(compareNotices);
+}
+
+function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): Notice[] {
+  const floor = at.getTime() - RECENT_NOTICES_INDEX_RETENTION_MS;
+  return notices
+    .filter((n) => {
+      const t = Date.parse(n.at);
+      return Number.isFinite(t) && t >= floor;
+    })
+    .sort(compareNotices)
+    .slice(0, RECENT_NOTICES_INDEX_MAX_ENTRIES);
+}
+
+/**
+ * Cheap default read for `situations notices` / the recent-notices banner:
+ * point-reads the bounded `recent_notices` index row instead of scanning
+ * every notice ever recorded. Falls back to one full scan (seeding the
+ * index from it) when the requested window exceeds the index's retention,
+ * `all` is requested, or the index hasn't been declared/seeded yet.
+ */
+export async function listNoticesIndexed(
+  node: NodeClient,
+  cfg: Config,
+  opts: { all?: boolean; since?: string } = {},
+): Promise<Notice[]> {
+  if (opts.all) return listNotices(node, cfg);
+  if (opts.since && parseSinceDuration(opts.since) > RECENT_NOTICES_INDEX_RETENTION_MS) {
+    return listNotices(node, cfg);
+  }
+  const cached = await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY);
+  if (cached !== null) {
+    return cached.map((n) => normalizeNotice(n)).sort(compareNotices);
+  }
+  const all = await listNotices(node, cfg);
+  await rebuildNoticesIndex(node, cfg, all);
+  return all;
+}
+
+export async function rebuildNoticesIndex(
+  node: NodeClient,
+  cfg: Config,
+  notices?: Notice[],
+): Promise<Notice[]> {
+  const all = notices ?? (await listNotices(node, cfg));
+  const bounded = pruneNoticesForIndex(all);
+  await writeIndexPayload(node, cfg, RECENT_NOTICES_INDEX_KEY, bounded);
+  return bounded;
+}
+
+async function patchNoticesIndex(node: NodeClient, cfg: Config, notice: Notice): Promise<void> {
+  const cached = (await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY)) ?? [];
+  const withoutSlug = cached.filter((n) => n.slug !== notice.slug);
+  await writeIndexPayload(node, cfg, RECENT_NOTICES_INDEX_KEY, pruneNoticesForIndex([...withoutSlug, notice]));
 }
 
 export async function upsertNotice(
@@ -249,9 +310,11 @@ export async function upsertNotice(
   const hash = schemaHashFor("notice", cfg);
   if (existing) {
     await node.updateRecord({ schemaHash: hash, fields, keyHash: notice.slug });
+    await patchNoticesIndex(node, cfg, notice);
     return { notice, action: "updated" };
   }
   await node.createRecord({ schemaHash: hash, fields, keyHash: notice.slug });
+  await patchNoticesIndex(node, cfg, notice);
   return { notice, action: "created" };
 }
 

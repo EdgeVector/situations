@@ -6,7 +6,7 @@ import {
   resolveOrDeclareSchemaHashes,
   resolveOrDeclareSituationHash,
 } from "../src/init-schema.ts";
-import { OWNER_APP_ID, noticeSchema, situationSchema } from "../src/schemas.ts";
+import { OWNER_APP_ID, indexSchema, noticeSchema, situationSchema } from "../src/schemas.ts";
 
 function mockNode(partial: Partial<NodeClient>): NodeClient {
   return {
@@ -69,6 +69,12 @@ describe("resolveOrDeclareSituationHash", () => {
           owner_app_id: OWNER_APP_ID,
           fields: [...noticeSchema.schema.fields],
         },
+        {
+          name: "index-already-loaded",
+          descriptive_name: indexSchema.schema.descriptive_name,
+          owner_app_id: OWNER_APP_ID,
+          fields: [...indexSchema.schema.fields],
+        },
       ],
       declareAppSchema: async () => {
         declared += 1;
@@ -103,7 +109,7 @@ describe("resolveOrDeclareSituationHash", () => {
     expect(await resolveOrDeclareSituationHash(node, { quiet: true })).toBe(
       "minted-situation-hash",
     );
-    expect(declaredNames).toEqual(["Situation", "Notice"]);
+    expect(declaredNames).toEqual(["Situation", "Notice", "Index"]);
   });
 
   test("returns null when declare-schema is unsupported (404)", async () => {
@@ -145,9 +151,15 @@ describe("resolveOrDeclareSchemaHashes", () => {
           owner_app_id: OWNER_APP_ID,
           fields: [...noticeSchema.schema.fields],
         },
+        {
+          name: "index-hash",
+          descriptive_name: indexSchema.schema.descriptive_name,
+          owner_app_id: OWNER_APP_ID,
+          fields: [...indexSchema.schema.fields],
+        },
       ],
     });
     const hashes = await resolveOrDeclareSchemaHashes(node, { quiet: true });
-    expect(hashes).toEqual({ situation: "sit-hash", notice: "notice-hash" });
+    expect(hashes).toEqual({ situation: "sit-hash", notice: "notice-hash", index: "index-hash" });
   });
 });

@@ -8,6 +8,7 @@ import {
   normalizeNotice,
   noticeToFields,
   parseSinceDuration,
+  pruneNoticesForIndex,
   rowToNotice,
   type Notice,
 } from "../src/notice.ts";
@@ -199,5 +200,73 @@ describe("defaultNoticeSlug", () => {
       at: "2026-07-14T19:12:03.000Z",
     });
     expect(slug.startsWith("notice-upgrade-")).toBe(true);
+  });
+});
+
+describe("pruneNoticesForIndex", () => {
+  const at = new Date("2026-07-20T00:00:00.000Z");
+
+  test("drops expired notices no reader can serve from the index", () => {
+    // Retention is 14 days but the default TTL is 24h, so an entry can sit well
+    // inside the window and still be invisible to every reader. Real shape
+    // measured on the primary 2026-07-27: 142 of 146 entries expired.
+    const live = baseNotice({
+      slug: "notice-live",
+      at: "2026-07-19T23:00:00.000Z",
+      expires_at: "2026-07-20T23:00:00.000Z",
+    });
+    const expired = baseNotice({
+      slug: "notice-expired",
+      at: "2026-07-18T00:00:00.000Z",
+      expires_at: "2026-07-19T00:00:00.000Z",
+    });
+
+    expect(pruneNoticesForIndex([live, expired], at).map((n) => n.slug)).toEqual(["notice-live"]);
+  });
+
+  test("still drops entries older than the retention window", () => {
+    const stale = baseNotice({
+      slug: "notice-stale",
+      at: "2026-06-01T00:00:00.000Z",
+      expires_at: "2027-01-01T00:00:00.000Z",
+    });
+    expect(pruneNoticesForIndex([stale], at)).toEqual([]);
+  });
+
+  test("keeps the serialized row inside one default-sized atom", () => {
+    // The regression this guards: the row is a single atom, so once it outgrows
+    // the node's atom-content limit EVERY index write is rejected as a bare 500
+    // while notice records keep landing — the index silently goes stale.
+    const many = Array.from({ length: 500 }, (_, i) =>
+      baseNotice({
+        slug: `notice-bulk-${String(i).padStart(3, "0")}`,
+        at: `2026-07-19T${String(i % 24).padStart(2, "0")}:00:00.000Z`,
+        expires_at: "2026-07-21T00:00:00.000Z",
+        summary: "x".repeat(600),
+      }),
+    );
+
+    const kept = pruneNoticesForIndex(many, at);
+
+    expect(JSON.stringify(kept).length).toBeLessThanOrEqual(48 * 1024);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(500);
+  });
+
+  test("sheds oldest first when capping for size", () => {
+    const notices = Array.from({ length: 200 }, (_, i) =>
+      baseNotice({
+        slug: `notice-${String(i).padStart(3, "0")}`,
+        at: `2026-07-${String(6 + Math.floor(i / 24)).padStart(2, "0")}T${String(i % 24).padStart(2, "0")}:00:00.000Z`,
+        expires_at: "2026-07-21T00:00:00.000Z",
+        summary: "y".repeat(600),
+      }),
+    );
+
+    const kept = pruneNoticesForIndex(notices, at);
+    const newest = [...notices].sort(compareNotices)[0];
+
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept[0]?.slug).toBe(newest?.slug);
   });
 });

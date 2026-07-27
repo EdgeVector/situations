@@ -15,6 +15,10 @@ const RECENT_NOTICES_INDEX_KEY = "recent_notices";
 // use; anything asking further back than this falls back to a full scan.
 const RECENT_NOTICES_INDEX_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const RECENT_NOTICES_INDEX_MAX_ENTRIES = 500;
+// The index row is one atom. 500 entries of real notices serialize to ~340 KB,
+// far past the 64 KiB default atom-content limit, so the entry cap alone cannot
+// keep this row writable — see `capIndexBytes`.
+const RECENT_NOTICES_INDEX_MAX_BYTES = 48 * 1024;
 
 export type Notice = {
   slug: string;
@@ -243,15 +247,45 @@ export async function listNotices(node: NodeClient, cfg: Config): Promise<Notice
   return res.results.map(rowToNotice).sort(compareNotices);
 }
 
-function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): Notice[] {
+export function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): Notice[] {
   const floor = at.getTime() - RECENT_NOTICES_INDEX_RETENTION_MS;
-  return notices
+  const kept = notices
     .filter((n) => {
       const t = Date.parse(n.at);
       return Number.isFinite(t) && t >= floor;
     })
+    // Expired notices are never served *from this index*: `--all` and windows
+    // past the retention both fall back to the full scan, and every other read
+    // path filters them out. Retention is 14 days but the default TTL is 24h,
+    // so without this the row accumulates ~14x more entries than any reader can
+    // ever see. Measured 2026-07-27: 142 of 146 entries were expired.
+    .filter((n) => !isNoticeExpired(n, at))
     .sort(compareNotices)
     .slice(0, RECENT_NOTICES_INDEX_MAX_ENTRIES);
+  return capIndexBytes(kept);
+}
+
+/**
+ * Keep the serialized index row inside one atom.
+ *
+ * The whole index is a single `payload_json` value, so once it outgrows the
+ * node's atom-content limit **every write is rejected** — and because the
+ * record write and the index patch are separate mutations, notices keep landing
+ * while the index silently stops updating. That failure is invisible: reads of
+ * the existing row still work, so the only symptom is `situations notices`
+ * quietly going stale.
+ *
+ * The budget is deliberately below the 64 KiB default rather than the node's
+ * configured limit: this row has to fit a default-configured node, not just the
+ * one that happens to be running.
+ */
+function capIndexBytes(notices: Notice[]): Notice[] {
+  let out = notices;
+  // Sorted newest-first, so dropping from the tail sheds the oldest entries.
+  while (out.length > 1 && JSON.stringify(out).length > RECENT_NOTICES_INDEX_MAX_BYTES) {
+    out = out.slice(0, out.length - 1);
+  }
+  return out;
 }
 
 /**

@@ -185,7 +185,11 @@ describe("listNoticesIndexed", () => {
       slug: "notice-1",
       title: "LastDB restarted",
       kind: "restart",
-      at: "2026-07-17T12:00:00.000Z",
+      // Seeded relative to now, with a live TTL. A hardcoded past `at` with the
+      // default 24h expiry makes this fixture time-brittle: the index only
+      // carries unexpired notices, so a fixed date silently ages out of it.
+      at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     });
     expect(fullScans()).toBe(0);
 

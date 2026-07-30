@@ -198,24 +198,29 @@ describe("listNoticesIndexed", () => {
     expect(fullScans()).toBe(0);
   });
 
-  test("--all bypasses the index with an explicit full scan", async () => {
+  test("--all reads expired notice history without a full scan", async () => {
     const cfg = baseConfig();
     const { node, fullScans } = makeNode();
-    await upsertNotice(node, cfg, { slug: "notice-1", title: "t", at: "2026-07-17T12:00:00.000Z" });
+    await upsertNotice(node, cfg, {
+      slug: "notice-1",
+      title: "t",
+      at: "2026-07-17T12:00:00.000Z",
+      expires_at: "2026-07-18T12:00:00.000Z",
+    });
 
     const visible = await listNoticesIndexed(node, cfg, { all: true });
     expect(visible.map((n) => n.slug)).toEqual(["notice-1"]);
-    expect(fullScans()).toBe(1);
+    expect(fullScans()).toBe(0);
   });
 
-  test("a --since window past the index retention falls back to a full scan", async () => {
+  test("a --since window past the index retention reads keyed history buckets", async () => {
     const cfg = baseConfig();
     const { node, fullScans } = makeNode();
     await upsertNotice(node, cfg, { slug: "notice-1", title: "t", at: "2026-07-17T12:00:00.000Z" });
 
     const visible = await listNoticesIndexed(node, cfg, { since: "60d" });
     expect(visible.map((n) => n.slug)).toEqual(["notice-1"]);
-    expect(fullScans()).toBe(1);
+    expect(fullScans()).toBe(0);
   });
 
   test("falls back to a full scan when the index schema isn't declared yet", async () => {
@@ -232,11 +237,12 @@ describe("listNoticesIndexed", () => {
     expect(fullScans()).toBe(2);
   });
 
-  test("listNotices (--all path) still returns every notice via a full scan", async () => {
+  test("listNotices (--all path) returns every notice through keyed history", async () => {
     const cfg = baseConfig();
-    const { node } = makeNode();
+    const { node, fullScans } = makeNode();
     await upsertNotice(node, cfg, { slug: "n1", title: "t", at: "2026-07-17T12:00:00.000Z" });
     const all = await listNotices(node, cfg);
     expect(all.map((n) => n.slug)).toEqual(["n1"]);
+    expect(fullScans()).toBe(0);
   });
 });

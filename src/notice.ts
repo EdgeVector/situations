@@ -11,8 +11,10 @@ import { nowIso, validateSlug } from "./record.ts";
 import { hasIndexSchema, readIndexPayload, writeIndexPayload } from "./index-cache.ts";
 
 const RECENT_NOTICES_INDEX_KEY = "recent_notices";
+const NOTICE_HISTORY_DAYS_INDEX_KEY = "notice_history_days";
+const NOTICE_HISTORY_DAY_PREFIX = "notice_history_day:";
 // Covers the "situations notices --since 1h/2h/24h" hot path agents actually
-// use; anything asking further back than this falls back to a full scan.
+// use; anything asking further back than this uses the keyed history index.
 const RECENT_NOTICES_INDEX_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const RECENT_NOTICES_INDEX_MAX_ENTRIES = 500;
 // The index row is one atom. 500 entries of real notices serialize to ~340 KB,
@@ -238,13 +240,70 @@ export async function requireNotice(node: NodeClient, cfg: Config, slug: string)
   return notice;
 }
 
-/** Full-history scan of every Notice row ever recorded. Expensive — reserve for `--all` / far-back `--since` and index rebuilds. */
-export async function listNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
+async function scanNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
   const res = await node.queryAll({
     schemaHash: schemaHashFor("notice", cfg),
     fields: fieldsFor("notice"),
   });
   return res.results.map(rowToNotice).sort(compareNotices);
+}
+
+function noticeHistoryDay(atIso: string): string | null {
+  const at = Date.parse(atIso);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+function noticeHistoryDayKey(day: string): string {
+  return `${NOTICE_HISTORY_DAY_PREFIX}${day}`;
+}
+
+function normalizeHistoryDays(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const day = String(item ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || seen.has(day)) continue;
+    seen.add(day);
+    out.push(day);
+  }
+  return out.sort((a, b) => b.localeCompare(a));
+}
+
+function dayCouldContainSince(day: string, floorMs: number): boolean {
+  const dayEnd = Date.parse(`${day}T23:59:59.999Z`);
+  return Number.isFinite(dayEnd) && dayEnd >= floorMs;
+}
+
+async function listNoticesHistoryIndexed(
+  node: NodeClient,
+  cfg: Config,
+  opts: { since?: string } = {},
+): Promise<Notice[]> {
+  const days = normalizeHistoryDays(
+    await readIndexPayload<unknown>(node, cfg, NOTICE_HISTORY_DAYS_INDEX_KEY),
+  );
+  const floorMs = opts.since ? Date.now() - parseSinceDuration(opts.since) : null;
+  const wantedDays =
+    floorMs === null ? days : days.filter((day) => dayCouldContainSince(day, floorMs));
+  const notices: Notice[] = [];
+  for (const day of wantedDays) {
+    const bucket = await readIndexPayload<Notice[]>(node, cfg, noticeHistoryDayKey(day));
+    if (!bucket) continue;
+    notices.push(...bucket.map((n) => normalizeNotice(n)));
+  }
+  return notices.sort(compareNotices);
+}
+
+/**
+ * Full notice history. Current configs read the keyed day-bucket history index;
+ * pre-index configs keep the legacy scan fallback so old local dev nodes still
+ * work until they are re-initialized.
+ */
+export async function listNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
+  if (hasIndexSchema(cfg)) return listNoticesHistoryIndexed(node, cfg);
+  return scanNotices(node, cfg);
 }
 
 export function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): Notice[] {
@@ -292,8 +351,8 @@ function capIndexBytes(notices: Notice[]): Notice[] {
  * Cheap default read for `situations notices` / the recent-notices banner:
  * point-reads the bounded `recent_notices` index row instead of scanning
  * every notice ever recorded. A declared-but-empty index is a valid fresh-node
- * state and returns an empty list; `--all` and windows past the retention remain
- * the explicit full-history scan paths.
+ * state and returns an empty list; `--all` and windows past the retention read
+ * the keyed day-bucket history index instead of scanning Notice rows.
  */
 export async function listNoticesIndexed(
   node: NodeClient,
@@ -302,14 +361,14 @@ export async function listNoticesIndexed(
 ): Promise<Notice[]> {
   if (opts.all) return listNotices(node, cfg);
   if (opts.since && parseSinceDuration(opts.since) > RECENT_NOTICES_INDEX_RETENTION_MS) {
-    return listNotices(node, cfg);
+    return hasIndexSchema(cfg) ? listNoticesHistoryIndexed(node, cfg, opts) : scanNotices(node, cfg);
   }
   const cached = await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY);
   if (cached !== null) {
     return cached.map((n) => normalizeNotice(n)).sort(compareNotices);
   }
   if (hasIndexSchema(cfg)) return [];
-  const all = await listNotices(node, cfg);
+  const all = await scanNotices(node, cfg);
   await rebuildNoticesIndex(node, cfg, all);
   return all;
 }
@@ -329,6 +388,19 @@ async function patchNoticesIndex(node: NodeClient, cfg: Config, notice: Notice):
   const cached = (await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY)) ?? [];
   const withoutSlug = cached.filter((n) => n.slug !== notice.slug);
   await writeIndexPayload(node, cfg, RECENT_NOTICES_INDEX_KEY, pruneNoticesForIndex([...withoutSlug, notice]));
+
+  const day = noticeHistoryDay(notice.at);
+  if (!day) return;
+  const days = normalizeHistoryDays(
+    (await readIndexPayload<unknown>(node, cfg, NOTICE_HISTORY_DAYS_INDEX_KEY)) ?? [],
+  );
+  if (!days.includes(day)) {
+    await writeIndexPayload(node, cfg, NOTICE_HISTORY_DAYS_INDEX_KEY, [day, ...days].sort((a, b) => b.localeCompare(a)));
+  }
+  const bucketKey = noticeHistoryDayKey(day);
+  const bucket = (await readIndexPayload<Notice[]>(node, cfg, bucketKey)) ?? [];
+  const withoutNotice = bucket.filter((n) => n.slug !== notice.slug);
+  await writeIndexPayload(node, cfg, bucketKey, [...withoutNotice, notice].sort(compareNotices));
 }
 
 export async function upsertNotice(

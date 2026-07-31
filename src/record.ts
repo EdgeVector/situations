@@ -64,12 +64,6 @@ export type PreflightBlock = {
   message: string;
 };
 
-export type PreflightResult = {
-  ok: boolean;
-  checked: PreflightRequest;
-  blocks: PreflightBlock[];
-};
-
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 export function nowIso(): string {
@@ -411,7 +405,7 @@ export function preflight(
   situations: Situation[],
   request: PreflightRequest,
   at: Date = new Date(),
-): PreflightResult {
+) {
   const action = normalizeAction(request.action);
   const blocks: PreflightBlock[] = [];
   for (const situation of activeSituations(situations, at)) {

@@ -71,10 +71,6 @@ export async function resolveLoadedSituationHash(node: NodeClient): Promise<stri
   return resolveLoadedHash(node, { key: "situation", schema: situationSchema });
 }
 
-export async function resolveLoadedNoticeHash(node: NodeClient): Promise<string | null> {
-  return resolveLoadedHash(node, { key: "notice", schema: noticeSchema });
-}
-
 async function resolveLoadedHash(
   node: NodeClient,
   target: SchemaTarget,

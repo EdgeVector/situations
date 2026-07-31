@@ -1,9 +1,5 @@
 export const OWNER_APP_ID = "fsituations";
 
-export function namespacedSchemaName(shortName: string): string {
-  return `${OWNER_APP_ID}/${shortName}`;
-}
-
 export type FieldType = "String" | { Array: "String" };
 
 export type SchemaDefinition = {

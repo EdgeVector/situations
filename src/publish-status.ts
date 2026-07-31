@@ -27,7 +27,6 @@ import { OWNER_APP_ID, type FieldType } from "./schemas.ts";
 
 export const SITUATIONS_APP_ID = OWNER_APP_ID;
 export const SNAPSHOT_SLUG = "posture-latest";
-export const DEFAULT_NOTICE_SINCE = "24h";
 export const DEFAULT_MAX_RECORDS = 50;
 
 type FieldMap = Record<string, string>;
@@ -191,7 +190,7 @@ export function buildPosturePublication(options: {
   const noticeLimit = positiveInt(options.noticeLimit, 50);
   const active = activeSituations(options.situations, now);
   const recent = filterNotices(options.notices, {
-    since: options.noticeSince ?? DEFAULT_NOTICE_SINCE,
+    since: options.noticeSince ?? "24h",
     at: now,
   }).slice(0, noticeLimit);
 

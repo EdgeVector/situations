@@ -238,12 +238,6 @@ export const indexSchema: AddSchemaRequest = {
 export const RECORD_TYPES = ["situation", "notice", "index"] as const;
 export type RecordType = (typeof RECORD_TYPES)[number];
 
-export const UNIQUE_SCHEMAS = [
-  { key: "situation" as const, schema: situationSchema },
-  { key: "notice" as const, schema: noticeSchema },
-  { key: "index" as const, schema: indexSchema },
-];
-
 export function fieldsFor(type: RecordType): string[] {
   if (type === "situation") return [...SITUATION_FIELDS];
   if (type === "notice") return [...NOTICE_FIELDS];

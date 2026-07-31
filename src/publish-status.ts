@@ -27,7 +27,7 @@ import { OWNER_APP_ID, type FieldType } from "./schemas.ts";
 
 export const SITUATIONS_APP_ID = OWNER_APP_ID;
 export const SNAPSHOT_SLUG = "posture-latest";
-export const DEFAULT_MAX_RECORDS = 50;
+const DEFAULT_MAX_RECORDS = 50;
 
 type FieldMap = Record<string, string>;
 type SchemaKey = "snapshot" | "posture" | "notice";

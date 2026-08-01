@@ -292,7 +292,7 @@ export async function deliverPostureStatus(
 
   const client =
     options.deliveryClient ??
-    newLastDbDeliveryClient({
+    defaultLastDbDeliveryClient({
       socketPath: options.socketPath ?? (options.cfg ? resolveSocketPath(options.cfg) : undefined),
       nodeUrl: options.cfg?.nodeUrl,
       userHash: options.cfg?.userHash,
@@ -441,7 +441,7 @@ export class LastDbDeliverError extends Error {
 
 type FetchInit = RequestInit & { unix?: string };
 
-export function newLastDbDeliveryClient(
+function defaultLastDbDeliveryClient(
   opts: { socketPath?: string; nodeUrl?: string; userHash?: string } = {},
 ): LastDbDeliveryClient {
   const callJson = newLastDbJsonCaller(opts);

@@ -35,7 +35,6 @@ import {
 import {
   filterNotices,
   hasNoticeSchema,
-  listNotices,
   listNoticesIndexed,
   normalizeNotice,
   renderNotice,

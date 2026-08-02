@@ -57,7 +57,7 @@ export type PreflightRequest = {
   automation?: string;
 };
 
-export type PreflightBlock = {
+type PreflightBlock = {
   situation: Situation;
   reason: "blocked" | "requires_human_clearance";
   action: string;

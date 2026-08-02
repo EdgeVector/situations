@@ -5,9 +5,9 @@ import { hasIndexSchema, readIndexPayload, writeIndexPayload } from "./index-cac
 
 const ACTIVE_SITUATIONS_INDEX_KEY = "active_situations";
 
-export type PhaseState = "pending" | "active" | "complete" | "skipped";
+type PhaseState = "pending" | "active" | "complete" | "skipped";
 
-export type SituationPhase = {
+type SituationPhase = {
   slug: string;
   label: string;
   state: PhaseState;

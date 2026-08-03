@@ -50,7 +50,7 @@ export type NoticeInput = Omit<Partial<Notice>, NoticeListField> & {
   links_brain?: unknown;
 };
 
-export type ListNoticesOptions = {
+type ListNoticesOptions = {
   /** Include expired notices. */
   all?: boolean;
   /** Only notices with `at` >= now - duration (e.g. "30m", "2h", "1d"). */

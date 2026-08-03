@@ -68,7 +68,7 @@ export type QueryResponse = {
 
 export type QueryFilter = Record<string, string>;
 
-export type LoadedSchema = {
+type LoadedSchema = {
   name: string;
   descriptive_name: string;
   owner_app_id: string;

@@ -96,7 +96,7 @@ describe("listActiveSituationsIndexed", () => {
     expect(fullScans()).toBe(0);
   });
 
-  test("cold start does one full scan, seeds the index, then reads are point-reads", async () => {
+  test("upserts seed the index and subsequent reads are point-reads", async () => {
     const cfg = baseConfig();
     const { node, fullScans } = makeNode();
 
@@ -139,7 +139,7 @@ describe("listActiveSituationsIndexed", () => {
     expect(fullScans()).toBe(0);
   });
 
-  test("falls back to a full scan when the index schema isn't declared yet", async () => {
+  test("fails closed without scanning when the index schema isn't declared", async () => {
     const cfg = baseConfig();
     cfg.schemaHashes = { situation: SITUATION_HASH, notice: NOTICE_HASH };
     const { node, fullScans } = makeNode();
@@ -151,18 +151,22 @@ describe("listActiveSituationsIndexed", () => {
       severity: "p2",
     });
 
-    const active = await listActiveSituationsIndexed(node, cfg);
-    expect(active.map((s) => s.slug)).toEqual(["pre-upgrade-situation"]);
-    expect(fullScans()).toBeGreaterThan(0);
+    await expect(listActiveSituationsIndexed(node, cfg)).rejects.toMatchObject({
+      code: "index_schema_required",
+    });
+    expect(fullScans()).toBe(0);
   });
 
-  test("--all path (listSituations) still returns resolved situations via a full scan", async () => {
+  test("--all returns active, resolved, and archived situations through keyed history", async () => {
     const cfg = baseConfig();
-    const { node } = makeNode();
+    const { node, fullScans } = makeNode();
 
-    await upsertSituation(node, cfg, { slug: "s1", title: "s1", status: "resolved" });
+    await upsertSituation(node, cfg, { slug: "s1", title: "s1", status: "active", created_at: "2026-07-17T12:00:00.000Z" });
+    await upsertSituation(node, cfg, { slug: "s2", title: "s2", status: "resolved", created_at: "2026-07-18T12:00:00.000Z" });
+    await upsertSituation(node, cfg, { slug: "s3", title: "s3", status: "archived", created_at: "2026-07-19T12:00:00.000Z" });
     const all = await listSituations(node, cfg);
-    expect(all.map((s) => s.slug)).toEqual(["s1"]);
+    expect(all.map((s) => s.slug).sort()).toEqual(["s1", "s2", "s3"]);
+    expect(fullScans()).toBe(0);
   });
 });
 
@@ -223,18 +227,16 @@ describe("listNoticesIndexed", () => {
     expect(fullScans()).toBe(0);
   });
 
-  test("falls back to a full scan when the index schema isn't declared yet", async () => {
+  test("fails closed without scanning when the index schema isn't declared", async () => {
     const cfg = baseConfig();
     cfg.schemaHashes = { situation: SITUATION_HASH, notice: NOTICE_HASH };
     const { node, fullScans } = makeNode();
     await upsertNotice(node, cfg, { slug: "notice-1", title: "t", at: "2026-07-17T12:00:00.000Z" });
 
-    const visible = await listNoticesIndexed(node, cfg, { since: "2h" });
-    expect(visible.map((n) => n.slug)).toEqual(["notice-1"]);
-    expect(fullScans()).toBeGreaterThan(0);
-    // Every read without a declared index schema is a fresh full scan.
-    await listNoticesIndexed(node, cfg, { since: "2h" });
-    expect(fullScans()).toBe(2);
+    await expect(listNoticesIndexed(node, cfg, { since: "2h" })).rejects.toMatchObject({
+      code: "index_schema_required",
+    });
+    expect(fullScans()).toBe(0);
   });
 
   test("listNotices (--all path) returns every notice through keyed history", async () => {

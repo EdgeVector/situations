@@ -4,13 +4,22 @@
 // the hot agent-facing reads (preflight, default `list`/`notices`) never pay
 // for a full-history scan of the Situation/Notice schemas.
 
-import type { NodeClient } from "./client.ts";
+import { FsituationsError, type NodeClient } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 
 const INDEX_QUERY_FIELDS = ["key", "payload_json", "updated_at"];
 
 export function hasIndexSchema(cfg: { schemaHashes: Record<string, string> }): boolean {
   return Boolean(cfg.schemaHashes.index && cfg.schemaHashes.index.length > 0);
+}
+
+export function requireIndexSchema(cfg: { schemaHashes: Record<string, string> }): void {
+  if (hasIndexSchema(cfg)) return;
+  throw new FsituationsError({
+    code: "index_schema_required",
+    message: "The fsituations Index schema is required for list operations.",
+    hint: "Run `situations init` against the node to declare and pin the keyed indexes; unfiltered product-schema scans are not supported.",
+  });
 }
 
 /** Returns null when the schema isn't declared yet, or the row hasn't been seeded. */

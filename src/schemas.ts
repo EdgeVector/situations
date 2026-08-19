@@ -210,9 +210,9 @@ export const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
 /**
  * Small cached rollups (e.g. `active_situations`, `recent_notices`) so agent
  * preflight and the default `list`/`notices` reads point-read one small row
- * instead of a full-history scan of the Situation/Notice schemas. Optional:
- * callers fall back to a full scan when this schema isn't declared/loaded yet
- * (pre-upgrade config) or a given index row hasn't been seeded.
+ * instead of a full-history scan of the Situation/Notice schemas. List
+ * operations require this schema; a missing row is an empty fresh-node state
+ * and never falls back to a product-schema scan.
  */
 export const indexSchema: AddSchemaRequest = {
   schema: {

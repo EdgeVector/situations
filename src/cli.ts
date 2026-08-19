@@ -532,7 +532,7 @@ async function initCmd(rest: string[]): Promise<number> {
     }
     if (!indexHash) {
       console.error(
-        "warning: Index schema not declared/loaded — list/preflight/notices will fall back to a full scan until re-init on Mini.",
+        "warning: Index schema not declared/loaded — list/preflight/notices require re-init on Mini; product-schema scans are not supported.",
       );
     }
   }
@@ -593,8 +593,8 @@ async function listCmd(rest: string[]): Promise<number> {
   }
   const fields = parseFieldProjection(parsed.values.field);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
-  // `--all` is the explicit, rare opt-in for a full-history scan; the default
-  // path point-reads the active-situations index instead.
+  // `--all` drains keyed day-bucket history; the default path point-reads the
+  // active-situations index.
   const visible = parsed.values.all
     ? await listSituations(node, cfg)
     : await listActiveSituationsIndexed(node, cfg);

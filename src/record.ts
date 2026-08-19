@@ -1,9 +1,11 @@
 import { FsituationsError, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import { fieldsFor, SEVERITY_VALUES, STATUS_VALUES, type Severity, type SituationStatus } from "./schemas.ts";
-import { hasIndexSchema, readIndexPayload, writeIndexPayload } from "./index-cache.ts";
+import { hasIndexSchema, readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
 
 const ACTIVE_SITUATIONS_INDEX_KEY = "active_situations";
+const SITUATION_HISTORY_DAYS_INDEX_KEY = "situation_history_days";
+const SITUATION_HISTORY_DAY_PREFIX = "situation_history_day:";
 
 type PhaseState = "pending" | "active" | "complete" | "skipped";
 
@@ -317,20 +319,60 @@ export async function requireSituation(
   return situation;
 }
 
-/** Full-history scan of every Situation row (active, resolved, archived). Expensive — reserve for `--all` and index rebuilds. */
+function situationHistoryDay(createdAt: string): string | null {
+  const created = Date.parse(createdAt);
+  if (!Number.isFinite(created)) return null;
+  return new Date(created).toISOString().slice(0, 10);
+}
+
+function situationHistoryDayKey(day: string): string {
+  return `${SITUATION_HISTORY_DAY_PREFIX}${day}`;
+}
+
+function normalizeHistoryDays(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const day = String(item ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || seen.has(day)) continue;
+    seen.add(day);
+    out.push(day);
+  }
+  return out.sort((a, b) => b.localeCompare(a));
+}
+
+/** Full history through bounded, keyed day buckets — never a Situation scan. */
 export async function listSituations(node: NodeClient, cfg: Config): Promise<Situation[]> {
-  const res = await node.queryAll({
-    schemaHash: schemaHashFor("situation", cfg),
-    fields: fieldsFor("situation"),
-  });
-  return res.results.map(rowToSituation).sort(compareSituations);
+  requireIndexSchema(cfg);
+  const days = normalizeHistoryDays(
+    await readIndexPayload<unknown>(node, cfg, SITUATION_HISTORY_DAYS_INDEX_KEY),
+  );
+  const bySlug = new Map<string, Situation>();
+  const active = await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY);
+  for (const raw of active ?? []) {
+    const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });
+    bySlug.set(situation.slug, situation);
+  }
+  for (const day of days) {
+    const bucket = await readIndexPayload<Situation[]>(node, cfg, situationHistoryDayKey(day));
+    if (!bucket) continue;
+    for (const raw of bucket) {
+      const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });
+      const existing = bySlug.get(situation.slug);
+      if (!existing || situation.updated_at.localeCompare(existing.updated_at) >= 0) {
+        bySlug.set(situation.slug, situation);
+      }
+    }
+  }
+  return [...bySlug.values()].sort(compareSituations);
 }
 
 /**
  * Cheap default read for preflight and `list`/`notices`: point-reads the
  * `active_situations` index row instead of scanning every Situation ever
  * filed. A declared-but-empty index is a valid fresh-node state and returns an
- * empty list; `--all` remains the explicit full-history scan path.
+ * empty list; `--all` reads the keyed day-bucket history index.
  */
 export async function listActiveSituationsIndexed(
   node: NodeClient,
@@ -342,10 +384,8 @@ export async function listActiveSituationsIndexed(
     const restored = cached.map((s) => normalizeSituation(s, undefined, { touchUpdatedAt: false }));
     return activeSituations(restored, at).sort(compareSituations);
   }
-  if (hasIndexSchema(cfg)) return [];
-  const all = await listSituations(node, cfg);
-  await rebuildSituationsIndex(node, cfg, all);
-  return activeSituations(all, at);
+  requireIndexSchema(cfg);
+  return [];
 }
 
 export async function rebuildSituationsIndex(
@@ -356,7 +396,33 @@ export async function rebuildSituationsIndex(
   const all = situations ?? (await listSituations(node, cfg));
   const active = activeSituations(all);
   await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, active);
+  for (const situation of all) await patchSituationsHistoryIndex(node, cfg, situation);
   return active;
+}
+
+async function patchSituationsHistoryIndex(
+  node: NodeClient,
+  cfg: Config,
+  situation: Situation,
+): Promise<void> {
+  if (!hasIndexSchema(cfg)) return;
+  const day = situationHistoryDay(situation.created_at);
+  if (!day) return;
+  const days = normalizeHistoryDays(
+    (await readIndexPayload<unknown>(node, cfg, SITUATION_HISTORY_DAYS_INDEX_KEY)) ?? [],
+  );
+  if (!days.includes(day)) {
+    await writeIndexPayload(
+      node,
+      cfg,
+      SITUATION_HISTORY_DAYS_INDEX_KEY,
+      [day, ...days].sort((a, b) => b.localeCompare(a)),
+    );
+  }
+  const bucketKey = situationHistoryDayKey(day);
+  const bucket = (await readIndexPayload<Situation[]>(node, cfg, bucketKey)) ?? [];
+  const withoutSlug = bucket.filter((item) => item.slug !== situation.slug);
+  await writeIndexPayload(node, cfg, bucketKey, [...withoutSlug, situation].sort(compareSituations));
 }
 
 async function patchSituationsIndex(
@@ -371,6 +437,7 @@ async function patchSituationsIndex(
   // Opportunistically drop any other entries that have since expired by clock
   // alone (no explicit upsert needed to notice that).
   await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, activeSituations(next));
+  await patchSituationsHistoryIndex(node, cfg, situation);
 }
 
 export async function upsertSituation(

@@ -8,7 +8,7 @@ import {
   type NoticeSeverityHint,
 } from "./schemas.ts";
 import { nowIso, validateSlug } from "./record.ts";
-import { hasIndexSchema, readIndexPayload, writeIndexPayload } from "./index-cache.ts";
+import { hasIndexSchema, readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
 
 const RECENT_NOTICES_INDEX_KEY = "recent_notices";
 const NOTICE_HISTORY_DAYS_INDEX_KEY = "notice_history_days";
@@ -240,14 +240,6 @@ export async function requireNotice(node: NodeClient, cfg: Config, slug: string)
   return notice;
 }
 
-async function scanNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
-  const res = await node.queryAll({
-    schemaHash: schemaHashFor("notice", cfg),
-    fields: fieldsFor("notice"),
-  });
-  return res.results.map(rowToNotice).sort(compareNotices);
-}
-
 function noticeHistoryDay(atIso: string): string | null {
   const at = Date.parse(atIso);
   if (!Number.isFinite(at)) return null;
@@ -297,13 +289,12 @@ async function listNoticesHistoryIndexed(
 }
 
 /**
- * Full notice history. Current configs read the keyed day-bucket history index;
- * pre-index configs keep the legacy scan fallback so old local dev nodes still
- * work until they are re-initialized.
+ * Full notice history through the keyed day-bucket history index. Pre-index
+ * configs fail closed with a re-init hint rather than scanning Notice.
  */
 export async function listNotices(node: NodeClient, cfg: Config): Promise<Notice[]> {
-  if (hasIndexSchema(cfg)) return listNoticesHistoryIndexed(node, cfg);
-  return scanNotices(node, cfg);
+  requireIndexSchema(cfg);
+  return listNoticesHistoryIndexed(node, cfg);
 }
 
 export function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): Notice[] {
@@ -314,8 +305,8 @@ export function pruneNoticesForIndex(notices: Notice[], at: Date = new Date()): 
       return Number.isFinite(t) && t >= floor;
     })
     // Expired notices are never served *from this index*: `--all` and windows
-    // past the retention both fall back to the full scan, and every other read
-    // path filters them out. Retention is 14 days but the default TTL is 24h,
+    // past the retention both use keyed history, and every other read path
+    // filters them out. Retention is 14 days but the default TTL is 24h,
     // so without this the row accumulates ~14x more entries than any reader can
     // ever see. Measured 2026-07-27: 142 of 146 entries were expired.
     .filter((n) => !isNoticeExpired(n, at))
@@ -361,16 +352,15 @@ export async function listNoticesIndexed(
 ): Promise<Notice[]> {
   if (opts.all) return listNotices(node, cfg);
   if (opts.since && parseSinceDuration(opts.since) > RECENT_NOTICES_INDEX_RETENTION_MS) {
-    return hasIndexSchema(cfg) ? listNoticesHistoryIndexed(node, cfg, opts) : scanNotices(node, cfg);
+    requireIndexSchema(cfg);
+    return listNoticesHistoryIndexed(node, cfg, opts);
   }
   const cached = await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY);
   if (cached !== null) {
     return cached.map((n) => normalizeNotice(n)).sort(compareNotices);
   }
-  if (hasIndexSchema(cfg)) return [];
-  const all = await scanNotices(node, cfg);
-  await rebuildNoticesIndex(node, cfg, all);
-  return all;
+  requireIndexSchema(cfg);
+  return [];
 }
 
 export async function rebuildNoticesIndex(

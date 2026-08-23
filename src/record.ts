@@ -388,18 +388,6 @@ export async function listActiveSituationsIndexed(
   return [];
 }
 
-export async function rebuildSituationsIndex(
-  node: NodeClient,
-  cfg: Config,
-  situations?: Situation[],
-): Promise<Situation[]> {
-  const all = situations ?? (await listSituations(node, cfg));
-  const active = activeSituations(all);
-  await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, active);
-  for (const situation of all) await patchSituationsHistoryIndex(node, cfg, situation);
-  return active;
-}
-
 async function patchSituationsHistoryIndex(
   node: NodeClient,
   cfg: Config,

@@ -363,17 +363,6 @@ export async function listNoticesIndexed(
   return [];
 }
 
-export async function rebuildNoticesIndex(
-  node: NodeClient,
-  cfg: Config,
-  notices?: Notice[],
-): Promise<Notice[]> {
-  const all = notices ?? (await listNotices(node, cfg));
-  const bounded = pruneNoticesForIndex(all);
-  await writeIndexPayload(node, cfg, RECENT_NOTICES_INDEX_KEY, bounded);
-  return bounded;
-}
-
 async function patchNoticesIndex(node: NodeClient, cfg: Config, notice: Notice): Promise<void> {
   const cached = (await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_INDEX_KEY)) ?? [];
   const withoutSlug = cached.filter((n) => n.slug !== notice.slug);

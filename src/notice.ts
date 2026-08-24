@@ -8,7 +8,7 @@ import {
   type NoticeSeverityHint,
 } from "./schemas.ts";
 import { nowIso, validateSlug } from "./record.ts";
-import { hasIndexSchema, readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
+import { readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
 
 const RECENT_NOTICES_INDEX_KEY = "recent_notices";
 const NOTICE_HISTORY_DAYS_INDEX_KEY = "notice_history_days";

@@ -235,8 +235,7 @@ export const indexSchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export const RECORD_TYPES = ["situation", "notice", "index"] as const;
-export type RecordType = (typeof RECORD_TYPES)[number];
+export type RecordType = "situation" | "notice" | "index";
 
 export function fieldsFor(type: RecordType): string[] {
   if (type === "situation") return [...SITUATION_FIELDS];

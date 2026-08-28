@@ -124,6 +124,29 @@ export function rejectGlobalFleetScope(
   });
 }
 
+export function rejectConflictingActionLists(input: {
+  blocked_actions?: unknown;
+  allowed_actions?: unknown;
+}): void {
+  const blocked = new Set(normalizeList(input.blocked_actions).map(normalizeAction));
+  const conflicts = normalizeList(input.allowed_actions)
+    .map(normalizeAction)
+    .filter((action, index, actions) => blocked.has(action) && actions.indexOf(action) === index)
+    .sort();
+  if (conflicts.length === 0) return;
+
+  throw new FsituationsError({
+    code: "conflicting_action_lists",
+    message:
+      "blocked_actions and allowed_actions contain the same action(s): " +
+      conflicts.map((action) => `"${action}"`).join(", ") +
+      ".",
+    hint:
+      "Remove each listed action from either blocked_actions or allowed_actions, " +
+      "then rerun `situations put <file>`.",
+  });
+}
+
 function normalizeList(value: unknown): string[] {
   const input = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   const out: string[] = [];
@@ -435,6 +458,7 @@ export async function upsertSituation(
 ): Promise<{ situation: Situation; action: "created" | "updated" }> {
   const existing = await findSituation(node, cfg, input.slug);
   const situation = normalizeSituation(input, existing ?? undefined);
+  rejectConflictingActionLists(situation);
   const fields = situationToFields(situation);
   const hash = schemaHashFor("situation", cfg);
   if (existing) {

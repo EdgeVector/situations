@@ -4,6 +4,7 @@ import {
   activeSituations,
   normalizeSituation,
   preflight,
+  rejectConflictingActionLists,
   rejectGlobalFleetScope,
   requireSituation,
   situationToFields,
@@ -85,6 +86,32 @@ describe("rejectGlobalFleetScope", () => {
     ).not.toThrow();
     expect(() =>
       rejectGlobalFleetScope({ status: "resolved", scope_routines: ["*"] }),
+    ).not.toThrow();
+  });
+});
+
+describe("rejectConflictingActionLists", () => {
+  test("rejects and names each normalized conflict", () => {
+    try {
+      rejectConflictingActionLists({
+        blocked_actions: ["dispatch-claude-agents", "restart_lastdbd"],
+        allowed_actions: ["restart-lastdbd", "dispatch-claude-agents"],
+      });
+      throw new Error("expected conflicting action lists to fail");
+    } catch (err) {
+      expect(err).toBeInstanceOf(FsituationsError);
+      expect((err as FsituationsError).code).toBe("conflicting_action_lists");
+      expect((err as Error).message).toContain('"dispatch-claude-agents"');
+      expect((err as Error).message).toContain('"restart-lastdbd"');
+    }
+  });
+
+  test("allows valid disjoint lists", () => {
+    expect(() =>
+      rejectConflictingActionLists({
+        blocked_actions: ["restart-lastdbd"],
+        allowed_actions: ["read-only-probe"],
+      }),
     ).not.toThrow();
   });
 });

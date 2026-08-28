@@ -26,6 +26,7 @@ import {
   listActiveSituationsIndexed,
   listSituations,
   preflight,
+  rejectConflictingActionLists,
   rejectGlobalFleetScope,
   requireSituation,
   upsertSituation,
@@ -565,6 +566,7 @@ async function putCmd(rest: string[]): Promise<number> {
   const body = file === "-" ? await new Response(Bun.stdin.stream()).text() : readFileSync(file, "utf8");
   const input = JSON.parse(body) as SituationInput;
   rejectGlobalFleetScope(input, { allowGlobal: Boolean(parsed.values["allow-global-scope"]) });
+  rejectConflictingActionLists(input);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
   const result = await upsertSituation(node, cfg, input);
   if (parsed.values.json) {

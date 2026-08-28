@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import type { NodeClient, QueryFilter, QueryResponse } from "../src/client.ts";
 import type { Config } from "../src/config.ts";
-import { listActiveSituationsIndexed, listSituations, upsertSituation } from "../src/record.ts";
+import {
+  findSituation,
+  listActiveSituationsIndexed,
+  listSituations,
+  requireSituation,
+  upsertSituation,
+} from "../src/record.ts";
 import { listNoticesIndexed, listNotices, upsertNotice } from "../src/notice.ts";
 
 const SITUATION_HASH = "hash-situation";
@@ -117,6 +123,51 @@ describe("listActiveSituationsIndexed", () => {
     const second = await listActiveSituationsIndexed(node, cfg);
     expect(second.map((s) => s.slug)).toEqual([created.slug]);
     expect(fullScans()).toBe(0);
+  });
+
+  test("rejects a conflicting create and accepts disjoint lists", async () => {
+    const cfg = baseConfig();
+    const { node } = makeNode();
+
+    await expect(
+      upsertSituation(node, cfg, {
+        slug: "conflicting-create",
+        blocked_actions: ["dispatch-claude-agents"],
+        allowed_actions: ["dispatch-claude-agents"],
+      }),
+    ).rejects.toMatchObject({ code: "conflicting_action_lists" });
+    expect(await findSituation(node, cfg, "conflicting-create")).toBeNull();
+
+    const { situation } = await upsertSituation(node, cfg, {
+      slug: "disjoint-create",
+      blocked_actions: ["restart-lastdbd"],
+      allowed_actions: ["read-only-probe"],
+    });
+    expect(situation.blocked_actions).toEqual(["restart-lastdbd"]);
+    expect(situation.allowed_actions).toEqual(["read-only-probe"]);
+  });
+
+  test("rejects a conflicting update and leaves the prior record unchanged", async () => {
+    const cfg = baseConfig();
+    const { node } = makeNode();
+
+    await upsertSituation(node, cfg, {
+      slug: "stable-update",
+      title: "Stable update",
+      blocked_actions: ["dispatch-claude-agents"],
+      allowed_actions: [],
+    });
+    const before = await requireSituation(node, cfg, "stable-update");
+
+    await expect(
+      upsertSituation(node, cfg, {
+        slug: "stable-update",
+        allowed_actions: ["dispatch_claude_agents"],
+      }),
+    ).rejects.toMatchObject({ code: "conflicting_action_lists" });
+
+    const after = await requireSituation(node, cfg, "stable-update");
+    expect(after).toEqual(before);
   });
 
   test("resolved situations drop out of the index on the next upsert", async () => {

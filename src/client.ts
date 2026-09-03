@@ -75,7 +75,7 @@ type LoadedSchema = {
   fields: string[];
 };
 
-export type AppSchemaDeclaration = {
+type AppSchemaDeclaration = {
   app_id: string;
   schema: string;
   canonical: string;

@@ -84,7 +84,7 @@ function normalizeKind(value: unknown): NoticeKind {
   return (NOTICE_KIND_VALUES as readonly string[]).includes(s) ? (s as NoticeKind) : "other";
 }
 
-export function normalizeSeverityHint(value: unknown): NoticeSeverityHint {
+function normalizeSeverityHint(value: unknown): NoticeSeverityHint {
   const s = String(value ?? "info").trim().toLowerCase();
   return (NOTICE_SEVERITY_HINT_VALUES as readonly string[]).includes(s)
     ? (s as NoticeSeverityHint)

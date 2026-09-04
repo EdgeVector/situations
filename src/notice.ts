@@ -79,7 +79,7 @@ function normalizeList(value: unknown): string[] {
   return out;
 }
 
-export function normalizeKind(value: unknown): NoticeKind {
+function normalizeKind(value: unknown): NoticeKind {
   const s = String(value ?? "other").trim().toLowerCase();
   return (NOTICE_KIND_VALUES as readonly string[]).includes(s) ? (s as NoticeKind) : "other";
 }

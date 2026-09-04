@@ -404,7 +404,7 @@ export async function upsertNotice(
   return { notice, action: "created" };
 }
 
-export function isNoticeExpired(notice: Notice, at: Date = new Date()): boolean {
+function isNoticeExpired(notice: Notice, at: Date = new Date()): boolean {
   if (!notice.expires_at) return false;
   const expires = Date.parse(notice.expires_at);
   return Number.isFinite(expires) && expires <= at.getTime();

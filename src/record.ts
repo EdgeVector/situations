@@ -522,7 +522,7 @@ export function preflight(
   return { ok: blocks.length === 0, checked: { ...request, action }, blocks };
 }
 
-export function compareSituations(a: Situation, b: Situation): number {
+function compareSituations(a: Situation, b: Situation): number {
   const sev = SEVERITY_VALUES.indexOf(a.severity) - SEVERITY_VALUES.indexOf(b.severity);
   if (sev !== 0) return sev;
   return b.updated_at.localeCompare(a.updated_at);

@@ -4,7 +4,6 @@ import { FsituationsError, type NodeClient } from "../src/client.ts";
 import {
   resolveLoadedSituationHash,
   resolveOrDeclareSchemaHashes,
-  resolveOrDeclareSituationHash,
 } from "../src/init-schema.ts";
 import { OWNER_APP_ID, indexSchema, noticeSchema, situationSchema } from "../src/schemas.ts";
 
@@ -52,89 +51,6 @@ describe("resolveLoadedSituationHash", () => {
   });
 });
 
-describe("resolveOrDeclareSituationHash", () => {
-  test("reuses a loaded schema without declaring", async () => {
-    let declared = 0;
-    const node = mockNode({
-      listSchemas: async () => [
-        {
-          name: "already-loaded",
-          descriptive_name: situationSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...situationSchema.schema.fields],
-        },
-        {
-          name: "notice-already-loaded",
-          descriptive_name: noticeSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...noticeSchema.schema.fields],
-        },
-        {
-          name: "index-already-loaded",
-          descriptive_name: indexSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...indexSchema.schema.fields],
-        },
-      ],
-      declareAppSchema: async () => {
-        declared += 1;
-        return {
-          app_id: OWNER_APP_ID,
-          schema: "fsituations/Situation",
-          canonical: "should-not-use",
-          resolution: "mint",
-        };
-      },
-    });
-    expect(await resolveOrDeclareSituationHash(node, { quiet: true })).toBe("already-loaded");
-    expect(declared).toBe(0);
-  });
-
-  test("asks Mini to register when nothing is loaded", async () => {
-    const declaredNames: string[] = [];
-    const node = mockNode({
-      listSchemas: async () => [],
-      declareAppSchema: async (appId, schema) => {
-        expect(appId).toBe(OWNER_APP_ID);
-        declaredNames.push(String(schema.name));
-        const name = String(schema.name);
-        return {
-          app_id: OWNER_APP_ID,
-          schema: `fsituations/${name}`,
-          canonical: `minted-${name.toLowerCase()}-hash`,
-          resolution: "mint",
-        };
-      },
-    });
-    expect(await resolveOrDeclareSituationHash(node, { quiet: true })).toBe(
-      "minted-situation-hash",
-    );
-    expect(declaredNames).toEqual(["Situation", "Notice", "Index"]);
-  });
-
-  test("returns null when declare-schema is unsupported (404)", async () => {
-    const node = mockNode({
-      listSchemas: async () => [],
-      declareAppSchema: async () => {
-        throw new FsituationsError({ code: "http_404", message: "not found" });
-      },
-    });
-    expect(await resolveOrDeclareSituationHash(node, { quiet: true })).toBeNull();
-  });
-
-  test("rethrows non-missing-route declare failures", async () => {
-    const node = mockNode({
-      listSchemas: async () => [],
-      declareAppSchema: async () => {
-        throw new FsituationsError({ code: "http_500", message: "boom" });
-      },
-    });
-    await expect(resolveOrDeclareSituationHash(node, { quiet: true })).rejects.toMatchObject({
-      code: "http_500",
-    });
-  });
-});
-
 describe("resolveOrDeclareSchemaHashes", () => {
   test("returns both hashes when both already loaded", async () => {
     const node = mockNode({
@@ -161,5 +77,27 @@ describe("resolveOrDeclareSchemaHashes", () => {
     });
     const hashes = await resolveOrDeclareSchemaHashes(node, { quiet: true });
     expect(hashes).toEqual({ situation: "sit-hash", notice: "notice-hash", index: "index-hash" });
+  });
+
+  test("leaves hashes unset when declare-schema is unsupported (404)", async () => {
+    const node = mockNode({
+      listSchemas: async () => [],
+      declareAppSchema: async () => {
+        throw new FsituationsError({ code: "http_404", message: "not found" });
+      },
+    });
+    expect(await resolveOrDeclareSchemaHashes(node, { quiet: true })).toEqual({});
+  });
+
+  test("rethrows non-missing-route declare failures", async () => {
+    const node = mockNode({
+      listSchemas: async () => [],
+      declareAppSchema: async () => {
+        throw new FsituationsError({ code: "http_500", message: "boom" });
+      },
+    });
+    await expect(resolveOrDeclareSchemaHashes(node, { quiet: true })).rejects.toMatchObject({
+      code: "http_500",
+    });
   });
 });

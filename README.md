@@ -131,7 +131,7 @@ bun run install-shim
 ```
 
 The installer refreshes the durable host-track checkout
-`~/.host-track/situations` from `lastdb:///situations` and creates
+`~/.host-track/situations` from `http://localhost:3300/EdgeVector/situations.git` and creates
 `~/.local/bin/situations` by default. It also installs the `fsituations`
 compatibility alias during the migration. Set `SITUATIONS_INSTALL_BIN` or
 `FSITUATIONS_INSTALL_BIN` to choose another directory.

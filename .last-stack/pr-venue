@@ -1,4 +1,4 @@
-lastgit
-# Gate of record: LastGit lastdb:///situations (code node).
-# GitHub is a PUBLIC READ-ONLY MIRROR for clone/browse only.
-# Do not use GitHub PRs for merge policy. Mirror via .lastgit/sync-github-mirror.sh.
+forgejo
+# Gate of record for EdgeVector/situations: Forgejo (http://localhost:3300), Tom 2026-09-06.
+# The LastGit repo lastdb:///situations is disabled: no CRs, no pushes. Workflow: sop-forge-pr-workflow.
+# Decision: decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default.

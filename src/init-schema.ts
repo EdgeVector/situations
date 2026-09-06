@@ -58,15 +58,6 @@ export async function resolveOrDeclareSchemaHashes(
   return hashes;
 }
 
-/** @deprecated Prefer resolveOrDeclareSchemaHashes — kept for tests/callers of Situation-only path. */
-export async function resolveOrDeclareSituationHash(
-  node: NodeClient,
-  opts: { quiet?: boolean } = {},
-): Promise<string | null> {
-  const hashes = await resolveOrDeclareSchemaHashes(node, opts);
-  return hashes.situation ?? null;
-}
-
 export async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {
   return resolveLoadedHash(node, { key: "situation", schema: situationSchema });
 }

@@ -128,7 +128,7 @@ interface SchemaDefinition {
   field_data_classifications: Record<string, { sensitivity_level: number; data_domain: string }>;
 }
 
-export const SNAPSHOT_FIELDS = [
+const SNAPSHOT_FIELDS = [
   "slug",
   "captured_at",
   "posture_count",

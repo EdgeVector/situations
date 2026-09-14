@@ -214,7 +214,7 @@ export function hasNoticeSchema(cfg: { schemaHashes: Record<string, string> }): 
   return Boolean(cfg.schemaHashes.notice && cfg.schemaHashes.notice.length > 0);
 }
 
-export async function findNotice(
+async function findNotice(
   node: NodeClient,
   cfg: Config,
   slug: string,

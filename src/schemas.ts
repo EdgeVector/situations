@@ -2,7 +2,7 @@ export const OWNER_APP_ID = "fsituations";
 
 export type FieldType = "String" | { Array: "String" };
 
-export type SchemaDefinition = {
+type SchemaDefinition = {
   name: string;
   owner_app_id: string;
   descriptive_name: string;

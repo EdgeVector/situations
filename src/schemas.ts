@@ -43,7 +43,7 @@ export type NoticeKind = (typeof NOTICE_KIND_VALUES)[number];
 export const NOTICE_SEVERITY_HINT_VALUES = ["info", "warn"] as const;
 export type NoticeSeverityHint = (typeof NOTICE_SEVERITY_HINT_VALUES)[number];
 
-export const SITUATION_FIELDS = [
+const SITUATION_FIELDS = [
   "slug",
   "title",
   "summary",

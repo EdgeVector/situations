@@ -429,7 +429,7 @@ function requiredField(fields: FieldMap, key: string): string {
   return value;
 }
 
-export class LastDbDeliverError extends Error {
+class LastDbDeliverError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {

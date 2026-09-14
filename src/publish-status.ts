@@ -147,7 +147,7 @@ const POSTURE_FIELDS = [
   "updated_at",
 ] as const;
 
-export const NOTICE_SLIM_FIELDS = [
+const NOTICE_SLIM_FIELDS = [
   "slug",
   "kind",
   "at",

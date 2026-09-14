@@ -67,7 +67,7 @@ const SITUATION_FIELDS = [
   "expires_at",
 ] as const;
 
-export const NOTICE_FIELDS = [
+const NOTICE_FIELDS = [
   "slug",
   "kind",
   "title",

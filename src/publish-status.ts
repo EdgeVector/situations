@@ -46,7 +46,7 @@ export interface PublishStatusOptions {
   socketPath?: string;
 }
 
-export interface PosturePublication {
+interface PosturePublication {
   capturedAt: string;
   snapshot: FieldMap;
   posture: FieldMap[];

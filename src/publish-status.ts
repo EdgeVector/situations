@@ -97,7 +97,7 @@ export interface DeliveryStageRequest {
   }>;
 }
 
-export interface DeliveryStageResult {
+interface DeliveryStageResult {
   deliveryId: string;
   recordCount: number;
   fields: string[];

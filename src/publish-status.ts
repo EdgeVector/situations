@@ -138,7 +138,7 @@ const SNAPSHOT_FIELDS = [
   "schema_hashes_json",
 ] as const;
 
-export const POSTURE_FIELDS = [
+const POSTURE_FIELDS = [
   "slug",
   "severity",
   "status",

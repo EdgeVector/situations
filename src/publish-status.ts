@@ -104,7 +104,7 @@ interface DeliveryStageResult {
   note: string;
 }
 
-export interface DeliveryApproveResult {
+interface DeliveryApproveResult {
   deliveryId: string;
   shared: number;
   messageType: string;

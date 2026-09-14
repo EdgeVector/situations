@@ -83,7 +83,7 @@ export interface DeliverStatusResult extends PublishStatusResult {
   approved: DeliveryApproveResult | null;
 }
 
-export interface DeliveryStageRequest {
+interface DeliveryStageRequest {
   recipient_pubkey: string;
   recipient_display_name?: string;
   messaging_public_key: string;

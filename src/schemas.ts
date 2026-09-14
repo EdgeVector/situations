@@ -205,7 +205,7 @@ export const noticeSchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
+const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
 
 /**
  * Small cached rollups (e.g. `active_situations`, `recent_notices`) so agent

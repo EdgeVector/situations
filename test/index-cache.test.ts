@@ -271,7 +271,15 @@ describe("listNoticesIndexed", () => {
   test("a --since window past the index retention reads keyed history buckets", async () => {
     const cfg = baseConfig();
     const { node, fullScans } = makeNode();
-    await upsertNotice(node, cfg, { slug: "notice-1", title: "t", at: "2026-07-17T12:00:00.000Z" });
+    // Seeded relative to now, like the live-TTL fixture above: a hardcoded
+    // `at` silently left the 60d window on 2026-09-15 and the test went red
+    // on the calendar, not on a code change. 30 days back is past the index
+    // retention and inside the requested window on every date.
+    await upsertNotice(node, cfg, {
+      slug: "notice-1",
+      title: "t",
+      at: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    });
 
     const visible = await listNoticesIndexed(node, cfg, { since: "60d" });
     expect(visible.map((n) => n.slug)).toEqual(["notice-1"]);

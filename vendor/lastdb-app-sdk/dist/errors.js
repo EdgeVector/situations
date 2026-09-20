@@ -34,11 +34,15 @@ export class FoldDbError extends Error {
         Object.setPrototypeOf(this, new.target.prototype);
     }
 }
-// ---------------------------------------------------------------------------
-// Transport / protocol
-// ---------------------------------------------------------------------------
 /** A network/transport failure (socket error, connection refused, DNS, etc.). */
 export class TransportError extends FoldDbError {
+    kind;
+    status;
+    constructor(message, kind = 'connect', options = {}) {
+        super(message);
+        this.kind = kind;
+        this.status = options.status;
+    }
 }
 /**
  * The node answered with an HTTP status the SDK has no specific class for.
@@ -51,6 +55,50 @@ export class UnexpectedResponseError extends FoldDbError {
         super(message);
         this.status = status;
         this.body = body;
+    }
+}
+/**
+ * The node's paginated `/api/query` response stopped making forward progress
+ * or could not produce the unique row count it advertised. This is an SDK-side
+ * guard around the known-unstable offset pagination path; callers should retry
+ * later or narrow the query instead of trusting a partial drain.
+ */
+export class QueryPaginationError extends FoldDbError {
+    reason;
+    detail;
+    constructor(reason, detail) {
+        super(queryPaginationMessage(reason, detail));
+        this.reason = reason;
+        this.detail = detail;
+    }
+}
+function queryPaginationMessage(reason, detail) {
+    if (reason === 'stalled_page') {
+        return ('queryAll pagination stalled: the node reported more rows but returned ' +
+            'no new record keys on the next page');
+    }
+    return (`queryAll collected ${detail.collectedCount} unique rows` +
+        (detail.totalCount === undefined
+            ? ''
+            : ` but the node reported total_count=${detail.totalCount}`));
+}
+/**
+ * `queryAll()` was called with no `filter.filter` (a full unfiltered schema
+ * drain — a "scan" in LastDB's DynamoDB-style access model) and without the
+ * explicit `{ allowFullScan: true }` opt-in. Scans are deprecated for product
+ * apps (`brain design-lastdb-scan-deprecation-path`): they are the dominant
+ * cause of node load under `lastdb ops`. Use a point read (`filter: {
+ * HashKey: id }`) or a partition read (HashRange) instead, or pass
+ * `allowFullScan: true` when a full drain is genuinely required (admin/offline
+ * tooling, migrations).
+ */
+export class FullScanNotAllowedError extends FoldDbError {
+    schemaName;
+    constructor(schemaName) {
+        super(`queryAll('${schemaName}') has no filter and allowFullScan is not set — ` +
+            'unfiltered scans are deprecated for product apps. Pass a HashKey/HashRange ' +
+            'filter, or opts.allowFullScan: true to run the full drain anyway.');
+        this.schemaName = schemaName;
     }
 }
 // ---------------------------------------------------------------------------
@@ -311,6 +359,25 @@ export class CapabilityVerificationError extends FoldDbError {
     }
 }
 /**
+ * The node rejected a data-path request before capability evaluation because
+ * the caller's authenticated session/API credential is no longer valid
+ * (`401`, commonly `{code:"AUTH_FAILED", error:"Session token expired"}`).
+ *
+ * Apps should catch this separately from capability-denied errors and start
+ * their re-authentication flow instead of treating it as an unexpected crash.
+ */
+export class AuthenticationRequiredError extends FoldDbError {
+    reason;
+    body;
+    constructor(reason, message, 
+    /** The raw parsed 401 response body, verbatim (`null` when none). */
+    body = null) {
+        super(message);
+        this.reason = reason;
+        this.body = body;
+    }
+}
+/**
  * The node rejected the request shape or schema state (`400 {kind:
  * "query_failed" | "mutation_rejected" | "invalid_request" | ...}`). Carries
  * the node's `kind` discriminator and message, plus the raw parsed response
@@ -330,6 +397,89 @@ export class RequestRejectedError extends FoldDbError {
         this.kind = kind;
         this.body = body;
     }
+}
+/** The one line an operator needs. Same shape from every app. */
+export function nodeTooOldMessage(detail) {
+    const who = detail.app ?? 'this client';
+    const build = detail.build ? ` (build ${detail.build})` : '';
+    const remedy = 'Run: brew upgrade lastdb && brew services restart lastdb';
+    if (detail.reason === 'unknown_key') {
+        const need = detail.required !== undefined ? ` ${who} needs api_version >= ${detail.required}.` : '';
+        return (`LastDB node does not know a request key ${who} sent` +
+            ` (400 unknown_key)${build}: the client is newer than the node.${need} ${remedy}`);
+    }
+    const reported = detail.reported === null ? 'no api_version' : `api_version ${detail.reported}`;
+    return (`${who} needs LastDB api_version >= ${detail.required ?? '?'}; ` +
+        `this node reports ${reported}${build}. ${remedy}`);
+}
+/**
+ * The node is older than this client needs. Subclasses
+ * {@link RequestRejectedError} (kind `unknown_key` or
+ * `api_version_below_required`) so an app that already catches request
+ * rejections keeps working, and can branch on `instanceof NodeTooOldError`
+ * to print {@link NodeTooOldError.message} and exit instead of retrying.
+ */
+export class NodeTooOldError extends RequestRejectedError {
+    detail;
+    constructor(detail, body = null) {
+        super(detail.reason, nodeTooOldMessage(detail), body);
+        this.detail = detail;
+    }
+}
+/**
+ * A compare-and-set (CAS) precondition on a {@link import('./types.js').MutationOp}
+ * (its `expected` field) did not hold: the node rejected the write with
+ * `409 {error:"cas_conflict", schema?, field?, key?, expected?, actual?, message?}`.
+ *
+ * The row changed since the caller's expected precondition (or was already
+ * present when `{type:"absent"}` was required), so the write was NOT applied.
+ * The typed fields (`schema` / `field` / `key` / `expected` / `actual`) let an
+ * app re-read the current value and retry without re-parsing free text or
+ * re-serializing a generic error body. The verbatim parsed 409 `body` is also
+ * carried for anything the node added beyond the modeled fields.
+ *
+ * A CAS conflict is a normal, expected outcome of contended writes — it is a
+ * distinct class (NOT a {@link RequestRejectedError} or an
+ * {@link UnexpectedResponseError}) precisely so an app can branch on it and
+ * retry rather than treat it as a hard failure.
+ */
+export class CasConflictError extends FoldDbError {
+    body;
+    /** The schema the conflicting write targeted, or `null`. */
+    schema;
+    /** The field the CAS precondition was checked against, or `null`. */
+    field;
+    /** The row key (rendered) the write targeted, or `null`. */
+    key;
+    /** The value the write EXPECTED the field to hold, or `null`. */
+    expected;
+    /** The field's ACTUAL current value the node observed, or `null`. */
+    actual;
+    constructor(detail = {}, 
+    /** The raw parsed 409 response body, verbatim (`null` when none). */
+    body = null) {
+        super(detail.message ?? casConflictMessage(detail));
+        this.body = body;
+        this.schema = detail.schema ?? null;
+        this.field = detail.field ?? null;
+        this.key = detail.key ?? null;
+        this.expected = detail.expected ?? null;
+        this.actual = detail.actual ?? null;
+    }
+}
+/** Compose a default message from the modeled CAS-conflict detail. */
+function casConflictMessage(detail) {
+    const where = detail.field !== undefined
+        ? ` on field '${detail.field}'` +
+            (detail.schema !== undefined ? ` of schema '${detail.schema}'` : '')
+        : detail.schema !== undefined
+            ? ` on schema '${detail.schema}'`
+            : '';
+    const values = detail.expected !== undefined || detail.actual !== undefined
+        ? ` (expected ${JSON.stringify(detail.expected ?? null)}, ` +
+            `actual ${JSON.stringify(detail.actual ?? null)})`
+        : '';
+    return `CAS conflict${where}: the row changed since the expected precondition${values}`;
 }
 // ---------------------------------------------------------------------------
 // Capability storage

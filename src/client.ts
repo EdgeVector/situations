@@ -25,6 +25,7 @@ import {
   httpTransport,
   udsTransport,
   CapabilityDeniedError,
+  NodeTooOldError,
   PermissionDeniedError,
   RequestRejectedError,
   TransportError,
@@ -32,8 +33,10 @@ import {
   type CapabilityStore as SdkCapabilityStore,
   type JsonValue as SdkJsonValue,
   type QueryFilter as SdkQueryFilter,
+  type NodeVersion as SdkNodeVersion,
   type Transport as SdkTransport,
 } from "@lastdb/app-sdk";
+import { MIN_LASTDB_API_VERSION, SITUATIONS_APP_LABEL } from "./lastdb-version.ts";
 
 import { OWNER_APP_ID } from "./schemas.ts";
 
@@ -90,6 +93,13 @@ export type NodeClient = {
     | { provisioned: true; userHash: string }
     | { provisioned: false; reason: string }
   >;
+  // GET /api/version — the client↔node compatibility handshake (app-sdk
+  // `version()`). A node that predates the route reports `apiVersion: 0`,
+  // `handshake: false`; never an error. The gate that ENFORCES
+  // `MIN_LASTDB_API_VERSION` runs once per client before the first request
+  // (see `requireNodeApiVersion` in `newNodeClient`). Optional on the type so
+  // hand-written test doubles stay small.
+  nodeVersion?(): Promise<SdkNodeVersion>;
   listSchemas(): Promise<LoadedSchema[]>;
   declareAppSchema(
     appId: string,
@@ -152,10 +162,28 @@ export function newNodeClient(opts: {
   // harmless. Built lazily so `init` (which only touches the owner-only
   // autoIdentity/listSchemas paths, often before a userHash is resolved) never
   // pays for it.
+  // The client↔node version gate (app-sdk "Version handshake"). Resolved ONCE
+  // per client before the first request on either wire path (the SDK
+  // transport and `callJson`). With `MIN_LASTDB_API_VERSION` = 0 it resolves
+  // without IO; with a positive floor it reads `GET /api/version` and throws
+  // the SDK's NodeTooOldError — one line that names the fix — so a
+  // situations newer than the node stops before its first write, not on a
+  // bare 400 after it. The version route and `/health` are exempt.
+  let apiVersionGate: Promise<void> | null = null;
+  const requireNodeApiVersion = (path: string): Promise<void> => {
+    if (isVersionGateExempt(path)) return Promise.resolve();
+    apiVersionGate ??=
+      MIN_LASTDB_API_VERSION > 0 ? gateOnNodeApiVersion(client()) : Promise.resolve();
+    return apiVersionGate;
+  };
+
   let sdk: LastDbClient | null = null;
   const client = (): LastDbClient => {
     if (sdk === null) {
-      const transport: SdkTransport = chooseTransport(baseUrl, socketPath, headers());
+      const transport: SdkTransport = gatedTransport(
+        chooseTransport(baseUrl, socketPath, headers()),
+        requireNodeApiVersion,
+      );
       sdk = new LastDbClient(
         OWNER_APP_ID,
         transport,
@@ -174,6 +202,7 @@ export function newNodeClient(opts: {
     path: string,
     body?: unknown,
   ): Promise<{ status: number; body: unknown }> {
+    await requireNodeApiVersion(path);
     const { res, text } = await request({
       baseUrl,
       method,
@@ -209,6 +238,9 @@ export function newNodeClient(opts: {
   return {
     baseUrl,
     userHash: opts.userHash,
+    nodeVersion() {
+      return client().version();
+    },
     async autoIdentity() {
       const { status, body } = await callJson("GET", "/api/system/auto-identity");
       if (status === 200) {
@@ -302,6 +334,31 @@ export function newNodeClient(opts: {
         returned_count: results.length,
         total_count: result.page?.totalCount ?? results.length,
       };
+    },
+  };
+}
+
+// Paths the version gate never waits on: the handshake itself and the
+// liveness probe.
+function isVersionGateExempt(path: string): boolean {
+  const bare = path.split("?")[0] ?? path;
+  return bare === "/api/version" || bare === "/health" || bare === "/api/health";
+}
+
+// Resolve the version gate: the SDK's NodeTooOldError propagates to the
+// caller (it is the one line that names the fix), so this only narrows the
+// resolved type.
+async function gateOnNodeApiVersion(sdk: LastDbClient): Promise<void> {
+  await sdk.requireApiVersion(MIN_LASTDB_API_VERSION, SITUATIONS_APP_LABEL);
+}
+
+// Wrap an SDK transport so every send waits on the version gate first.
+function gatedTransport(inner: SdkTransport, gate: (path: string) => Promise<void>): SdkTransport {
+  return {
+    target: inner.target,
+    async send(method, path, options) {
+      await gate(path);
+      return inner.send(method, path, options);
     },
   };
 }
@@ -429,6 +486,12 @@ function mapSdkDataError(
   }
   if (err instanceof PermissionDeniedError) {
     return mapNodeError(403, { kind: "permission_denied", error: err.reason }, path);
+  }
+  // NB: NodeTooOldError subclasses RequestRejectedError — order matters. Its
+  // message is already the one line an operator needs; wrapping it as
+  // "HTTP 400" would bury the fact that the NODE is the side that moved.
+  if (err instanceof NodeTooOldError) {
+    return new FsituationsError({ code: "node_too_old", message: err.message, cause: err });
   }
   if (err instanceof RequestRejectedError) {
     return mapNodeError(400, err.body ?? { kind: err.kind, error: err.message }, path);

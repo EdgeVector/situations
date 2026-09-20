@@ -29,8 +29,14 @@
 export declare class FoldDbError extends Error {
     constructor(message: string);
 }
+export type TransportErrorKind = 'timeout' | 'protocol' | 'connect';
 /** A network/transport failure (socket error, connection refused, DNS, etc.). */
 export declare class TransportError extends FoldDbError {
+    readonly kind: TransportErrorKind;
+    readonly status?: number;
+    constructor(message: string, kind?: TransportErrorKind, options?: {
+        status?: number;
+    });
 }
 /**
  * The node answered with an HTTP status the SDK has no specific class for.
@@ -40,6 +46,43 @@ export declare class UnexpectedResponseError extends FoldDbError {
     readonly status: number;
     readonly body: unknown;
     constructor(message: string, status: number, body: unknown);
+}
+/**
+ * The node's paginated `/api/query` response stopped making forward progress
+ * or could not produce the unique row count it advertised. This is an SDK-side
+ * guard around the known-unstable offset pagination path; callers should retry
+ * later or narrow the query instead of trusting a partial drain.
+ */
+export declare class QueryPaginationError extends FoldDbError {
+    readonly reason: 'stalled_page' | 'total_count_mismatch';
+    readonly detail: {
+        totalCount?: number;
+        collectedCount: number;
+        returnedCount?: number;
+        pageSize?: number;
+        offset?: number;
+    };
+    constructor(reason: 'stalled_page' | 'total_count_mismatch', detail: {
+        totalCount?: number;
+        collectedCount: number;
+        returnedCount?: number;
+        pageSize?: number;
+        offset?: number;
+    });
+}
+/**
+ * `queryAll()` was called with no `filter.filter` (a full unfiltered schema
+ * drain — a "scan" in LastDB's DynamoDB-style access model) and without the
+ * explicit `{ allowFullScan: true }` opt-in. Scans are deprecated for product
+ * apps (`brain design-lastdb-scan-deprecation-path`): they are the dominant
+ * cause of node load under `lastdb ops`. Use a point read (`filter: {
+ * HashKey: id }`) or a partition read (HashRange) instead, or pass
+ * `allowFullScan: true` when a full drain is genuinely required (admin/offline
+ * tooling, migrations).
+ */
+export declare class FullScanNotAllowedError extends FoldDbError {
+    readonly schemaName: string;
+    constructor(schemaName: string);
 }
 /**
  * `request-consent` → `404`. The app id is not in the canonical app registry
@@ -202,6 +245,23 @@ export declare class CapabilityVerificationError extends FoldDbError {
     readonly tokenAppId?: string | undefined;
     constructor(problem: 'malformed' | 'audience_mismatch' | 'integrity_mismatch', appId: string, tokenAppId?: string | undefined);
 }
+export type AuthenticationRequiredReason = 'session_expired' | 'auth_failed';
+/**
+ * The node rejected a data-path request before capability evaluation because
+ * the caller's authenticated session/API credential is no longer valid
+ * (`401`, commonly `{code:"AUTH_FAILED", error:"Session token expired"}`).
+ *
+ * Apps should catch this separately from capability-denied errors and start
+ * their re-authentication flow instead of treating it as an unexpected crash.
+ */
+export declare class AuthenticationRequiredError extends FoldDbError {
+    readonly reason: AuthenticationRequiredReason;
+    /** The raw parsed 401 response body, verbatim (`null` when none). */
+    readonly body: unknown;
+    constructor(reason: AuthenticationRequiredReason, message: string, 
+    /** The raw parsed 401 response body, verbatim (`null` when none). */
+    body?: unknown);
+}
 /**
  * The node rejected the request shape or schema state (`400 {kind:
  * "query_failed" | "mutation_rejected" | "invalid_request" | ...}`). Carries
@@ -218,6 +278,95 @@ export declare class RequestRejectedError extends FoldDbError {
     readonly body: unknown;
     constructor(kind: string, message: string, 
     /** The raw parsed 400 response body, verbatim (`null` when none). */
+    body?: unknown);
+}
+/**
+ * Why the SDK decided the node is too old for this client.
+ *
+ * - `api_version_below_required`: the preflight read `GET /api/version` (or
+ *   got a 404 from a node that predates the route, reported as `0`) and the
+ *   number is below what the app declared.
+ * - `unknown_key`: a data route answered `400 {kind:"unknown_key"}` — the node
+ *   does not know a key this client sent. The key is never echoed by the node
+ *   (its I4 rule), which is fine: the fix is the same either way.
+ */
+export type NodeTooOldReason = 'api_version_below_required' | 'unknown_key';
+/** The facts {@link NodeTooOldError} carries for a one-line remedy. */
+export interface NodeTooOldDetail {
+    reason: NodeTooOldReason;
+    /** What the app declared it needs (`connect({ requireApiVersion })`). */
+    required?: number;
+    /** What the node reported (`0` = predates the handshake; `null` = unknown). */
+    reported: number | null;
+    /** The node's baked build string when it reported one. */
+    build: string | null;
+    /** Who is asking, for the message (e.g. `brain 0.8.1`). */
+    app?: string;
+}
+/** The one line an operator needs. Same shape from every app. */
+export declare function nodeTooOldMessage(detail: NodeTooOldDetail): string;
+/**
+ * The node is older than this client needs. Subclasses
+ * {@link RequestRejectedError} (kind `unknown_key` or
+ * `api_version_below_required`) so an app that already catches request
+ * rejections keeps working, and can branch on `instanceof NodeTooOldError`
+ * to print {@link NodeTooOldError.message} and exit instead of retrying.
+ */
+export declare class NodeTooOldError extends RequestRejectedError {
+    readonly detail: NodeTooOldDetail;
+    constructor(detail: NodeTooOldDetail, body?: unknown);
+}
+/**
+ * The detail fields the node carries on a `409 {error:"cas_conflict"}` body,
+ * surfaced as typed accessors on {@link CasConflictError}. All are optional on
+ * the wire — the node fills what it knows about the failed precondition.
+ */
+export interface CasConflictDetail {
+    /** The schema the conflicting write targeted. */
+    schema?: string;
+    /** The field the CAS precondition was checked against. */
+    field?: string;
+    /** The row key (rendered) the write targeted. */
+    key?: string;
+    /** The value the write EXPECTED the field to hold (the precondition). */
+    expected?: string;
+    /** The field's ACTUAL current value the node observed (`null` when absent). */
+    actual?: string | null;
+    /** A human-readable message, when the node supplied one. */
+    message?: string;
+}
+/**
+ * A compare-and-set (CAS) precondition on a {@link import('./types.js').MutationOp}
+ * (its `expected` field) did not hold: the node rejected the write with
+ * `409 {error:"cas_conflict", schema?, field?, key?, expected?, actual?, message?}`.
+ *
+ * The row changed since the caller's expected precondition (or was already
+ * present when `{type:"absent"}` was required), so the write was NOT applied.
+ * The typed fields (`schema` / `field` / `key` / `expected` / `actual`) let an
+ * app re-read the current value and retry without re-parsing free text or
+ * re-serializing a generic error body. The verbatim parsed 409 `body` is also
+ * carried for anything the node added beyond the modeled fields.
+ *
+ * A CAS conflict is a normal, expected outcome of contended writes — it is a
+ * distinct class (NOT a {@link RequestRejectedError} or an
+ * {@link UnexpectedResponseError}) precisely so an app can branch on it and
+ * retry rather than treat it as a hard failure.
+ */
+export declare class CasConflictError extends FoldDbError {
+    /** The raw parsed 409 response body, verbatim (`null` when none). */
+    readonly body: unknown;
+    /** The schema the conflicting write targeted, or `null`. */
+    readonly schema: string | null;
+    /** The field the CAS precondition was checked against, or `null`. */
+    readonly field: string | null;
+    /** The row key (rendered) the write targeted, or `null`. */
+    readonly key: string | null;
+    /** The value the write EXPECTED the field to hold, or `null`. */
+    readonly expected: string | null;
+    /** The field's ACTUAL current value the node observed, or `null`. */
+    readonly actual: string | null;
+    constructor(detail?: CasConflictDetail, 
+    /** The raw parsed 409 response body, verbatim (`null` when none). */
     body?: unknown);
 }
 /** No capability is stored under the requested app id (`loadCapability`). */

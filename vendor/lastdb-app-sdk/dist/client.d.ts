@@ -15,7 +15,7 @@
  */
 import { type CapabilityStore } from './capabilityStore.js';
 import { type Transport } from './transport.js';
-import type { ConnectOptions, ConsentScope, MutationOp, MutationResult, QueryAllOptions, QueryFilter, QueryResult, RequestConsentResult, SearchOptions, SearchResult } from './types.js';
+import type { ConnectOptions, ConsentScope, AutoIdentityResult, ChangesOptions, ChangesResult, ListOptions, ListResult, LoadedSchema, NodeVersion, MutationOp, MutationResult, QueryAllOptions, QueryFilter, QueryResult, RequestConsentResult, SchemaDescriptor, SchemaResolver, SearchOptions, SearchResult } from './types.js';
 /** Options for {@link LastDbClient.awaitConsent}. */
 export interface AwaitConsentOptions {
     /** Hard client-side ceiling. Throws {@link ConsentTimeoutError} past it. */
@@ -47,12 +47,14 @@ export declare function connect(options: ConnectOptions): Promise<LastDbClient>;
 export interface LastDbClientOptions {
     /** See `ConnectOptions.verifyCapability`. Default `false`. */
     verifyCapability?: boolean;
+    /** See `ConnectOptions.schemaResolver`. Default pass-through. */
+    schemaResolver?: SchemaResolver;
+    /**
+     * Canonical DB locator this client targets (also sent as `X-LastDB-Db`).
+     * Defaults to personal when omitted.
+     */
+    dbLocator?: string;
 }
-/**
- * @deprecated Renamed to {@link LastDbClientOptions}. Kept as an alias so
- * mid-port consumers keep compiling; removed at the adoption capstone.
- */
-export type FoldDbClientOptions = LastDbClientOptions;
 /** A connected LastDB app client. Construct via {@link connect}. */
 export declare class LastDbClient {
     readonly appId: string;
@@ -64,6 +66,9 @@ export declare class LastDbClient {
     /** The canonical node target this client is bound to (transport `target`). */
     private readonly nodeTarget;
     private readonly verifyCapability;
+    private readonly schemaResolver;
+    /** Canonical multi-DB locator forwarded on every data-path request. */
+    readonly dbLocator: string;
     constructor(appId: string, transport: Transport, store: CapabilityStore, capability: string | null, 
     /** The node-scoped capability-store key: `capabilityStoreKey(appId, node)`. */
     storeKey: string, 
@@ -73,6 +78,21 @@ export declare class LastDbClient {
     get target(): string;
     /** Whether a capability is currently loaded. */
     get hasCapability(): boolean;
+    /**
+     * `GET /api/version` — the client↔node compatibility handshake. Reads no
+     * node state and needs no capability. A node that predates the route (404)
+     * yields `{ apiVersion: 0, handshake: false }` rather than an error, so a
+     * caller can still print what it learned.
+     */
+    version(): Promise<NodeVersion>;
+    /**
+     * Refuse to proceed against a node whose `api_version` is below `required`.
+     * Throws {@link NodeTooOldError}, whose message is the one line an operator
+     * needs (`… Run: brew upgrade lastdb …`). Returns the node's version on
+     * success so a caller can log it. `connect({ requireApiVersion })` calls
+     * this for you.
+     */
+    requireApiVersion(required: number, appLabel?: string): Promise<NodeVersion>;
     /**
      * `POST /api/apps/request-consent`. Returns a `requestId` to poll with
      * {@link awaitConsent}. The owner grants via `folddb consent grant <appId>`.
@@ -105,6 +125,13 @@ export declare class LastDbClient {
      */
     loadCapability(): Promise<string | null>;
     /**
+     * `GET /api/list` — return one page of live record keys without hydrating
+     * atom bodies. Use this for membership, then point-read the keys whose
+     * fields you need. A page is not a census: follow `next_cursor` while
+     * `has_more` is true.
+     */
+    list(schemaName: string, opts?: ListOptions): Promise<ListResult>;
+    /**
      * `POST /api/query`. Reads fields from `schemaName` (a schema or a view).
      * Auto-attaches the capability headers when one is loaded.
      *
@@ -117,11 +144,13 @@ export declare class LastDbClient {
      * and the dev node (`fold_db_node::dev_mode`) honor them with production-parity
      * semantics (default 100, clamp 1000, `total_count`/`has_more` metadata).
      */
-    query(schemaName: string, filter?: QueryFilter): Promise<QueryResult>;
+    query(schemaName: string, filter?: QueryFilter, opts?: {
+        allowFullScan?: boolean;
+    }): Promise<QueryResult>;
     /**
      * Drain a query past the node's page cap: issues `query()` repeatedly with
      * `limit`/`offset` until the node reports no more rows, and returns every
-     * row as one {@link QueryResult}.
+     * unique row as one {@link QueryResult}.
      *
      * Termination is two-signal: the node's own `page.hasMore` when it reports
      * pagination metadata (production), else a short page
@@ -129,10 +158,10 @@ export declare class LastDbClient {
      * ceiling — when hit, the result's `page.hasMore` is `true` so the
      * truncation stays visible.
      *
-     * Works against both node kinds: production `fold_db_node` and the dev node
-     * (`fold_db_node::dev_mode`) both paginate `/api/query` with the same default/clamp
-     * and `page` metadata, so the drain follows `page.hasMore` identically on
-     * either.
+     * Production offset pagination has historically been unstable, so `queryAll`
+     * dedupes by row key across pages and throws {@link QueryPaginationError}
+     * when a follow-up page makes no unique progress or when a completed drain
+     * cannot match the node's `totalCount`.
      */
     queryAll(schemaName: string, filter?: Omit<QueryFilter, 'limit' | 'offset' | 'cursor'>, opts?: QueryAllOptions): Promise<QueryResult>;
     /**
@@ -140,6 +169,12 @@ export declare class LastDbClient {
      * capability headers when one is loaded.
      */
     mutate(schemaName: string, op: MutationOp): Promise<MutationResult>;
+    /**
+     * Read durable changed-row metadata since an opaque cursor. The node owns
+     * scope: a verified app sees only its authorized schemas, and `target` can
+     * only narrow that set. Rows are hints; point-read product state after wake.
+     */
+    changes(opts?: ChangesOptions): Promise<ChangesResult>;
     /**
      * `POST /api/app/search` — the **node-authoritative scoped search**
      * (`folddb_app_api.md` operation 5). Embeds `query`, ranks it over the
@@ -163,25 +198,43 @@ export declare class LastDbClient {
      * `schemaDisplayName` the hit came from.
      */
     search(query: string, opts?: SearchOptions): Promise<SearchResult>;
+    /**
+     * `GET /api/system/auto-identity`. Resolves the local owner identity a
+     * host-context app uses for `X-User-Hash`. A not-yet-provisioned node returns
+     * `{ provisioned: false }` for the node's canonical 503, so callers can pivot
+     * to bootstrap without treating it as a transport failure.
+     */
+    autoIdentity(): Promise<AutoIdentityResult>;
+    /**
+     * `GET /api/schemas`. Lists schemas loaded in the owner node and normalizes
+     * the fields host-context apps use to resolve their own canonical schema hash
+     * without hand-parsing raw route JSON.
+     */
+    listSchemas(): Promise<LoadedSchema[]>;
+    /**
+     * Resolve an app-owned schema descriptor to the loaded canonical schema entry.
+     * Matching uses `owner_app_id` + `descriptive_name`, and when `fields` is
+     * supplied requires the exact same field set regardless of order.
+     */
+    resolveSchema(descriptor: SchemaDescriptor): Promise<LoadedSchema | null>;
     /** Capability headers, present only when a capability is loaded. */
     private capabilityHeaders;
+    /**
+     * Resolve an app schema name to the node-facing schema + field maps (the
+     * data-path schema mapping used by `query`/`mutate`). Distinct from the
+     * public {@link resolveSchema} owner-host helper, which resolves a
+     * {@link SchemaDescriptor} to a {@link LoadedSchema}; they were merged from
+     * two concurrent PRs that both chose the name `resolveSchema`, so the private
+     * data-path one is named `resolveDataPathSchema` to avoid the collision.
+     */
+    private resolveDataPathSchema;
     /** Map a non-200 data-path response to a typed error. */
     private mapDataError;
     /** Extract an `error` string from a node error body, with a fallback. */
     private errorText;
 }
-/**
- * @deprecated Renamed to {@link LastDbClient}. Kept as an exported value + type
- * alias so mid-port consumers keep compiling (`new FoldDbClient(...)` and
- * `: FoldDbClient` both resolve to `LastDbClient`); removed at the adoption
- * capstone.
- */
-export declare const FoldDbClient: typeof LastDbClient;
-/**
- * @deprecated Renamed to {@link LastDbClient}. Alias kept for mid-port
- * consumers; removed at the adoption capstone.
- */
-export type FoldDbClient = LastDbClient;
+/** Parse a successful keys-only `GET /api/list` response. */
+export declare function parseListResponse(body: unknown): ListResult;
 /**
  * Parse a `200` `/api/query` body into a {@link QueryResult}, surfacing the
  * full per-row envelope (gap #3).
@@ -195,6 +248,8 @@ export type FoldDbClient = LastDbClient;
  * envelope the node sends, nor invents one it doesn't.
  */
 export declare function parseQueryResponse(body: unknown): QueryResult;
+/** Parse a successful `POST /api/app/changes` cursor page. */
+export declare function parseChangesResponse(body: unknown): ChangesResult;
 /**
  * Parse a `200` `/api/app/search` body into a {@link SearchResult}.
  *
@@ -209,4 +264,15 @@ export declare function parseQueryResponse(body: unknown): QueryResult;
  * so the envelope handling (enveloped vs bare row, null author) is identical.
  */
 export declare function parseSearchResponse(body: unknown): SearchResult;
+/**
+ * Parse a `GET /api/version` 200 body. Tolerant of a node that omits a
+ * field: a missing `api_version` reads as `0`, the same as a 404, because a
+ * handshake that cannot state its version has not stated compatibility.
+ */
+export declare function parseNodeVersion(body: unknown): NodeVersion;
+export declare function parseAutoIdentityResponse(body: unknown): AutoIdentityResult;
+/** Parse `GET /api/schemas` JSON into normalized loaded-schema entries. */
+export declare function parseSchemaListResponse(body: unknown): LoadedSchema[];
+/** Resolve a schema descriptor against an already-fetched schema list. */
+export declare function resolveLoadedSchema(schemas: readonly LoadedSchema[], descriptor: SchemaDescriptor): LoadedSchema | null;
 //# sourceMappingURL=client.d.ts.map

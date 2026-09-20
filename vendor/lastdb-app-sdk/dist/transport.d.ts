@@ -8,6 +8,16 @@
  * option, so one implementation covers both — the only difference is whether
  * we pass `host`/`port` or `socketPath`.
  */
+/**
+ * The per-request correlation-ID header the node's request-ops telemetry
+ * reads (sanitized to ≤96 chars server-side and rendered as `req=<id>` in
+ * `lastdb ops` "Slowest recent"). The transport mints a fresh UUID per
+ * request when neither the per-call headers nor the transport's
+ * `defaultHeaders` already carry one — per-request by design: a static
+ * default header would stamp every call with the same ID and defeat
+ * correlation. A caller-supplied value (either seam) is never clobbered.
+ */
+export declare const REQUEST_ID_HEADER = "x-lastdb-request-id";
 /** A parsed HTTP response: status + the parsed JSON body (or `null`). */
 export interface RawResponse {
     status: number;
@@ -24,7 +34,19 @@ export interface Transport {
     send(method: 'GET' | 'POST', path: string, options?: {
         headers?: Record<string, string>;
         body?: unknown;
+        /** Override this transport's timeout for one request. */
+        timeoutMs?: number;
+        /** Raise, but never shorten, the effective timeout for one request. */
+        minimumTimeoutMs?: number;
     }): Promise<RawResponse>;
+}
+/** Per-transport behavior shared by TCP and Unix-domain-socket HTTP. */
+export interface TransportOptions {
+    /**
+     * Per-request timeout in milliseconds. Defaults to 30s so a wedged node
+     * cannot leave app data-plane calls pending forever.
+     */
+    timeoutMs?: number;
 }
 /**
  * Build a {@link Transport} for a TCP base URL (e.g.
@@ -34,12 +56,12 @@ export interface Transport {
  * such as `X-User-Hash` that the production `fold_db_node` reads to resolve the
  * caller (its HTTP server is stateless: identity comes from the header).
  */
-export declare function httpTransport(baseUrl: string, defaultHeaders?: Record<string, string>): Transport;
+export declare function httpTransport(baseUrl: string, defaultHeaders?: Record<string, string>, options?: TransportOptions): Transport;
 /**
  * Build a {@link Transport} that speaks HTTP over a Unix-domain socket. See
  * {@link httpTransport} for the `defaultHeaders` contract.
  */
-export declare function udsTransport(socketPath: string, defaultHeaders?: Record<string, string>): Transport;
+export declare function udsTransport(socketPath: string, defaultHeaders?: Record<string, string>, options?: TransportOptions): Transport;
 /**
  * Discover which transport an app should use against a local node. Mirrors the
  * Rust `FoldDbHttpClient` discovery (CLI + MCP) so a TypeScript app and the
@@ -71,6 +93,7 @@ export declare function udsTransport(socketPath: string, defaultHeaders?: Record
 export declare function discoverTransport(options: {
     fallbackBaseUrl: string;
     defaultHeaders?: Record<string, string>;
+    timeoutMs?: number;
     /** Override the environment read for discovery (defaults to `process.env`). */
     env?: NodeJS.ProcessEnv;
 }): Transport;

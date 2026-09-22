@@ -25,9 +25,11 @@ import {
 import {
   listActiveSituationsIndexed,
   listSituations,
+  normalizeSituation,
   preflight,
   rejectConflictingActionLists,
   rejectGlobalFleetScope,
+  rejectMalformedListFields,
   requireSituation,
   upsertSituation,
   type Situation,
@@ -565,6 +567,7 @@ async function putCmd(rest: string[]): Promise<number> {
   }
   const body = file === "-" ? await new Response(Bun.stdin.stream()).text() : readFileSync(file, "utf8");
   const input = JSON.parse(body) as SituationInput;
+  rejectMalformedListFields(input as unknown as Record<string, unknown>);
   rejectGlobalFleetScope(input, { allowGlobal: Boolean(parsed.values["allow-global-scope"]) });
   rejectConflictingActionLists(input);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
@@ -688,16 +691,47 @@ async function preflightCmd(rest: string[]): Promise<number> {
       hint: "Example: situations preflight --action enable-ci --repo EdgeVector/fold",
     });
   }
-  const situations = parsed.values.file
-    ? [loadSituationFile(parsed.values.file)]
-    : await listSituationsFromConfig(parsed.values.config);
-  const result = preflight(situations, {
-    action,
-    repo: parsed.values.repo,
-    system: parsed.values.system,
-    routine: parsed.values.routine,
-    automation: parsed.values.automation,
-  });
+  // Fail closed: preflight gates the fleet. A read or match that throws must
+  // not look like "no verdict" to a caller that only checks for exit 3.
+  let result: ReturnType<typeof preflight>;
+  try {
+    const situations = parsed.values.file
+      ? [loadSituationFile(parsed.values.file)]
+      : await listSituationsFromConfig(parsed.values.config);
+    result = preflight(situations, {
+      action,
+      repo: parsed.values.repo,
+      system: parsed.values.system,
+      routine: parsed.values.routine,
+      automation: parsed.values.automation,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (parsed.values.json) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: false,
+            checked: {
+              action,
+              repo: parsed.values.repo,
+              system: parsed.values.system,
+              routine: parsed.values.routine,
+              automation: parsed.values.automation,
+            },
+            blocks: [],
+            error: { reason: "preflight_error", message },
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(`BLOCKED: preflight error for ${action}: ${message}`);
+    }
+    console.error(`situations: preflight error (fail closed, exit 3): ${message}`);
+    return 3;
+  }
   if (fields.length > 0) {
     const rows: FieldProjectionSource[] = result.blocks.map((block) => ({
       ...(block.situation as unknown as FieldProjectionSource),
@@ -1096,7 +1130,9 @@ async function listSituationsFromConfig(configPath?: string): Promise<Situation[
 
 function loadSituationFile(path: string): Situation {
   const body = readFileSync(path, "utf8");
-  return JSON.parse(body) as Situation;
+  return normalizeSituation(JSON.parse(body) as SituationInput, undefined, {
+    touchUpdatedAt: false,
+  });
 }
 
 function renderList(situations: Situation[]): string {

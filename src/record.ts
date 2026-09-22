@@ -124,6 +124,42 @@ export function rejectGlobalFleetScope(
   });
 }
 
+const LIST_FIELDS = [
+  "scope_systems",
+  "scope_repos",
+  "scope_routines",
+  "scope_automations",
+  "blocked_actions",
+  "allowed_actions",
+  "requires_human_clearance",
+  "links_kanban",
+  "links_brain",
+] as const;
+
+/**
+ * Reject a list field that is not an array of strings (or a comma string).
+ *
+ * `"requires_human_clearance": false` once reached the live store and made
+ * every preflight throw. Normalization now tolerates it, but a boolean in a
+ * policy list is ambiguous (did `true` mean "every action"?), so `put` asks
+ * the author to say it as a list.
+ */
+export function rejectMalformedListFields(input: Record<string, unknown>): void {
+  const bad: string[] = [];
+  for (const field of LIST_FIELDS) {
+    const value = input[field];
+    if (value === undefined || value === null || typeof value === "string") continue;
+    if (Array.isArray(value) && value.every((item) => typeof item === "string")) continue;
+    bad.push(`${field}=${JSON.stringify(value)}`);
+  }
+  if (bad.length === 0) return;
+  throw new FsituationsError({
+    code: "malformed_list_field",
+    message: `List fields must be arrays of strings: ${bad.join(", ")}.`,
+    hint: 'Use [] for "none", or list the values, e.g. "requires_human_clearance": ["enable-ci"].',
+  });
+}
+
 export function rejectConflictingActionLists(input: {
   blocked_actions?: unknown;
   allowed_actions?: unknown;
@@ -218,10 +254,15 @@ export function normalizeSituation(
   validateSlug(input.slug);
   const now = nowIso();
   const touchUpdatedAt = options.touchUpdatedAt ?? true;
-  const phases =
+  // Normalize every list-shaped field on the way in. A JSON input or a cached
+  // index payload can carry a non-array (e.g. `"requires_human_clearance":
+  // false`); left raw, it reaches the preflight spread and throws a TypeError
+  // that silently removes every verdict (2026-09-22 papercut).
+  const rawPhases =
     input.phases ??
     (input.phases_json !== undefined ? parsePhases(input.phases_json) : existing?.phases) ??
     [];
+  const phases = Array.isArray(rawPhases) ? normalizePhases(rawPhases) : [];
   const currentPhase =
     input.current_phase ??
     existing?.current_phase ??
@@ -235,19 +276,18 @@ export function normalizeSituation(
     summary: input.summary ?? existing?.summary ?? "",
     status: normalizeStatus(input.status ?? existing?.status),
     severity: normalizeSeverity(input.severity ?? existing?.severity),
-    scope_systems: input.scope_systems ?? existing?.scope_systems ?? [],
-    scope_repos: input.scope_repos ?? existing?.scope_repos ?? [],
-    scope_routines: input.scope_routines ?? existing?.scope_routines ?? [],
-    scope_automations: input.scope_automations ?? existing?.scope_automations ?? [],
+    scope_systems: normalizeList(input.scope_systems ?? existing?.scope_systems),
+    scope_repos: normalizeList(input.scope_repos ?? existing?.scope_repos),
+    scope_routines: normalizeList(input.scope_routines ?? existing?.scope_routines),
+    scope_automations: normalizeList(input.scope_automations ?? existing?.scope_automations),
     current_phase: currentPhase,
     phases,
-    blocked_actions: input.blocked_actions ?? existing?.blocked_actions ?? [],
-    allowed_actions: input.allowed_actions ?? existing?.allowed_actions ?? [],
-    requires_human_clearance:
-      input.requires_human_clearance ?? existing?.requires_human_clearance ?? [],
+    blocked_actions: normalizeList(input.blocked_actions ?? existing?.blocked_actions),
+    allowed_actions: normalizeList(input.allowed_actions ?? existing?.allowed_actions),
+    requires_human_clearance: normalizeList(input.requires_human_clearance ?? existing?.requires_human_clearance),
     preflight_message: input.preflight_message ?? existing?.preflight_message ?? "",
-    links_kanban: input.links_kanban ?? existing?.links_kanban ?? [],
-    links_brain: input.links_brain ?? existing?.links_brain ?? [],
+    links_kanban: normalizeList(input.links_kanban ?? existing?.links_kanban),
+    links_brain: normalizeList(input.links_brain ?? existing?.links_brain),
     owner: input.owner ?? existing?.owner ?? "",
     created_at: existing?.created_at ?? input.created_at ?? now,
     updated_at: touchUpdatedAt ? now : (input.updated_at ?? existing?.updated_at ?? ""),

@@ -166,6 +166,39 @@ describe("preflight", () => {
     const active = activeSituations([situation], new Date("2026-07-07T00:00:00.000Z"));
     expect(active).toHaveLength(1);
   });
+
+  test("preflight_message forbidding text blocks upgrade actions", () => {
+    const situation = baseSituation({
+      slug: "budget-deployment-hold",
+      title: "Budget schema deployment hold",
+      summary: "Primary upgrades are forbidden during schema migration.",
+      scope_repos: [],
+      scope_systems: [],
+      blocked_actions: [],
+      requires_human_clearance: [],
+      preflight_message: "Do not perform primary upgrades during this deployment.",
+    });
+
+    const result = preflight([situation], { action: "lastdb-safe-upgrade" });
+    expect(result.ok).toBe(false);
+    expect(result.blocks).toHaveLength(1);
+    expect(result.blocks[0]?.reason).toBe("blocked");
+    expect(result.blocks[0]?.situation.slug).toBe("budget-deployment-hold");
+    expect(result.blocks[0]?.message).toContain("Do not perform primary upgrades");
+  });
+
+  test("preflight_message forbidding without negation keywords does not block", () => {
+    const situation = baseSituation({
+      slug: "notice-only",
+      title: "Notice of upgrade",
+      blocked_actions: [],
+      requires_human_clearance: [],
+      preflight_message: "Primary upgrade in progress.",
+    });
+
+    const result = preflight([situation], { action: "lastdb-safe-upgrade" });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("record mapping", () => {

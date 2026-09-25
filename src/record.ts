@@ -520,6 +520,43 @@ export function activeSituations(situations: Situation[], at: Date = new Date())
   });
 }
 
+function preflightMessageForbidsAction(message: string, action: string): boolean {
+  if (!message || !action) return false;
+
+  const msg = message.toLowerCase();
+  const actionNorm = normalizeAction(action);
+
+  // Check for negation keywords that typically indicate a forbidding statement.
+  const negationKeywords = [
+    "do not",
+    "do not",
+    "forbid",
+    "prevent",
+    "block",
+    "must not",
+    "cannot",
+    "no ",
+  ];
+  const hasNegation = negationKeywords.some((keyword) => msg.includes(keyword));
+  if (!hasNegation) return false;
+
+  // Check if the message mentions the action or related keywords.
+  // For actions like "lastdb-safe-upgrade", check for action-specific keywords.
+  if (actionNorm.includes("safe-upgrade") || actionNorm.includes("upgrade")) {
+    // Primary upgrade actions: check for upgrade-related forbidding
+    const upgradeKeywords = [
+      "upgrade",
+      "safe-upgrade",
+      "primary",
+      actionNorm,
+    ];
+    return upgradeKeywords.some((keyword) => msg.includes(keyword));
+  }
+
+  // For other actions, check if the action name or similar is mentioned
+  return msg.includes(actionNorm) || msg.includes(action.toLowerCase());
+}
+
 export function preflight(
   situations: Situation[],
   request: PreflightRequest,
@@ -540,6 +577,15 @@ export function preflight(
     ].map(normalizeAction);
 
     if (matchesAction(blockedActions, action)) {
+      blocks.push({
+        situation,
+        reason: "blocked",
+        action,
+        message: situation.preflight_message || `${situation.title} blocks ${action}.`,
+      });
+      continue;
+    }
+    if (preflightMessageForbidsAction(situation.preflight_message, action)) {
       blocks.push({
         situation,
         reason: "blocked",

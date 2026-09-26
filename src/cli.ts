@@ -30,6 +30,7 @@ import {
   rejectConflictingActionLists,
   rejectGlobalFleetScope,
   rejectMalformedListFields,
+  rejectProseOnlyPolicy,
   requireSituation,
   upsertSituation,
   type Situation,
@@ -116,7 +117,7 @@ through Mini's Schema Service-backed path and the catalog identities are pinned.
 On older nodes without that route, register/load payloads from
 \`situations schema --json\`, then re-run init.`;
     case "put":
-      return `situations put <json-file|-> [--allow-global-scope]
+      return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
 Creates or updates one situation. The JSON keys mirror the Situation record:
 slug, title, status, severity, scope_repos, phases, blocked_actions, etc.
@@ -128,7 +129,16 @@ Scope rules (Tom 2026-07-14 — global fleet kill switch ban):
   - Prefer empty scope + blocked_actions (action preflight), or narrow globs
     (*dmg*, *cloud-sync*). See README "scope_routines is not a panic button".
   - --allow-global-scope: override only when the issue is truly fleet-wide
-    (and after Discord needs-human). Default put REJECTS bare "*".`;
+    (and after Discord needs-human). Default put REJECTS bare "*".
+
+Prose is not policy (2026-09-25):
+  - preflight reads blocked_actions / requires_human_clearance, and only for a
+    Situation whose scope the caller reaches. A hold written only in
+    preflight_message answers OK to every unattended caller.
+  - So put REJECTS a record whose preflight_message forbids a high-cost action
+    (today: lastdb-safe-upgrade, lastdb-restart) that the fields do not declare.
+  - --allow-prose-only-policy: the text is advice, not a hold. An out-of-scope
+    preflight still prints it as an ADVISORY.`;
     case "list":
       return `situations list [--all] [--json] [--field <a,b,c>]
 
@@ -165,7 +175,8 @@ Scope options:
   --routine <name>
   --automation <name>
   --file <json-file>  check one JSON situation file instead of LastDB
-  --json               print the full preflight result as JSON
+  --json               print the full preflight result as JSON (blocks and
+                       advisories)
   --field <a,b,c>     project the blocking situations as plain tab-separated
                       text (one row per block; nothing when allowed). Fields
                       include the situation fields plus reason, action, message.
@@ -549,6 +560,7 @@ async function putCmd(rest: string[]): Promise<number> {
       config: { type: "string" },
       json: { type: "boolean", default: false },
       "allow-global-scope": { type: "boolean", default: false },
+      "allow-prose-only-policy": { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
@@ -570,8 +582,13 @@ async function putCmd(rest: string[]): Promise<number> {
   rejectMalformedListFields(input as unknown as Record<string, unknown>);
   rejectGlobalFleetScope(input, { allowGlobal: Boolean(parsed.values["allow-global-scope"]) });
   rejectConflictingActionLists(input);
+  rejectProseOnlyPolicy(input as unknown as Record<string, unknown>, {
+    allowProseOnly: Boolean(parsed.values["allow-prose-only-policy"]),
+  });
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
-  const result = await upsertSituation(node, cfg, input);
+  const result = await upsertSituation(node, cfg, input, {
+    allowProseOnly: Boolean(parsed.values["allow-prose-only-policy"]),
+  });
   if (parsed.values.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
@@ -1172,14 +1189,24 @@ function renderSituation(s: Situation): string {
 }
 
 function renderPreflight(result: ReturnType<typeof preflight>): string {
-  if (result.ok) return `OK: ${result.checked.action}`;
-  return result.blocks
-    .map((block) => {
-      const label =
-        block.reason === "blocked" ? "BLOCKED" : "REQUIRES HUMAN CLEARANCE";
-      return `${label}: ${block.action} by ${block.situation.slug}\n  ${block.message}`;
-    })
-    .join("\n");
+  const lines = result.ok
+    ? [`OK: ${result.checked.action}`]
+    : result.blocks.map((block) => {
+        const label =
+          block.reason === "blocked" ? "BLOCKED" : "REQUIRES HUMAN CLEARANCE";
+        return `${label}: ${block.action} by ${block.situation.slug}\n  ${block.message}`;
+      });
+  // An advisory never changes the verdict or the exit code. It exists so a
+  // caller reading OK also reads the sentence that forbids what it is about to
+  // do, when the Situation holding that sentence did not declare the scope.
+  for (const advisory of result.advisories) {
+    lines.push(
+      `ADVISORY: ${advisory.situation.slug} text forbids ${advisory.action}, ` +
+        `but its scope does not declare it, so this preflight did not block. ` +
+        `Read the Situation before you act.\n  ${advisory.message}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 if (import.meta.main) {

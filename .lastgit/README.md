@@ -1,23 +1,7 @@
-# LastGit home — situations (GitHub = public mirror)
+# .lastgit
 
-| Role | Location |
-|------|----------|
-| **SoT / CR / CI / merge** | `lastdb:///situations` on code node |
-| **Public mirror** | `https://github.com/EdgeVector/situations` (read-only for merge) |
+Gate of record is GitHub (EdgeVector/situations) since 2026-09-30.
 
-## Workflow
-
-1. Agents open CRs with `lastgit cr` (venue = `lastgit`).
-2. Multi-repo forge runs `.lastgit/ci.sh` → `ci-required` → auto-merge.
-3. Mirror job pushes LastGit `main` → GitHub `main` (see `sync-github-mirror.sh`).
-
-GitHub Actions are inert. Do not merge on GitHub.
-
-## Pin
-
-```bash
-export LASTGIT_SOCKET=$HOME/.lastgit/code/data/folddb.sock
-export LASTGIT_SCHEMA_MAP=$HOME/.lastgit/schema-map.json
-```
-
-`fsituations` is the same product (CLI alias); one git slug: `situations`.
+- `ci.sh` is the portable test body. `.github/workflows/ci-required.yml` runs it in the `test` job; the final job `ci-required` is the required status check.
+- `artifacts.json` declares the host-track artifact. The `publish` job (push to main) builds it on a macOS runner with last-stack's reusable workflow.
+- The LastGit copy is frozen. Do not open a LastGit change request.

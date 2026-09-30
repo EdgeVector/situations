@@ -1,0 +1,64 @@
+name: ci-required
+
+# Gate of record: GitHub (EdgeVector/situations). The test job runs the portable
+# .lastgit/ci.sh gate body. Brain: sop-migrate-repo-to-github.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-required-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Merge gate (.lastgit/ci.sh)
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
+        run: bash .lastgit/ci.sh
+
+  ci-required:
+    name: ci-required
+    if: ${{ always() }}
+    needs: [test]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            test "$r" = success || { echo "needed job result: $r" >&2; exit 1; }
+          done
+          echo "all needed jobs succeeded"
+
+  # Push to main only. Builds the compiled dist/* binaries on a macOS runner
+  # (bun --compile output is platform specific) and uploads ht-artifact-<sha>.
+  # host-track refresh pulls it on the Mac. Brain: design-github-artifact-publish-path
+  publish:
+    name: publish
+    needs: [ci-required]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    uses: EdgeVector/last-stack/.github/workflows/host-track-artifact.yml@main
+    with:
+      setup-bun: true
+      build-command: "bun install --frozen-lockfile && bun run build && dist/situations --help >/dev/null"
+      runs-on: macos-latest
+      config: .lastgit/artifacts.json

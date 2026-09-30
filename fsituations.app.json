@@ -10,8 +10,8 @@
     "aliases": [
       "fsituations"
     ],
-    "gate": "lastgit",
-    "gate_main": "lastdb:///situations#main",
+    "gate": "github",
+    "gate_main": "https://github.com/EdgeVector/situations.git#main",
     "artifact_app": "situations",
     "artifact_channel": "stable",
     "artifact_root": "$HOME/.lastgit/artifacts",
@@ -26,6 +26,6 @@
         "target": "$HOME/.local/bin/fsituations"
       }
     ],
-    "notes": "Verified LastGit artifact install; PATH links point into the immutable Host Track artifact bundle. Upgrade with host-track refresh situations; never develop in the install tree."
+    "notes": "Verified artifact install (GitHub gate, ci-required publish job); PATH links point into the immutable Host Track artifact bundle. Upgrade with host-track refresh situations; never develop in the install tree."
   }
 }

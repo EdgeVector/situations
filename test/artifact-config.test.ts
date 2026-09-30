@@ -7,10 +7,19 @@ const root = resolve(import.meta.dir, "..");
 describe("LastGit artifact producer config", () => {
   test("publishes the compiled Situations artifact bundle", () => {
     const config = JSON.parse(readFileSync(resolve(root, ".lastgit/artifacts.json"), "utf8")) as {
-      artifacts?: Array<{ app?: string; paths?: string[] }>;
+      artifacts?: Array<{ app?: string; platform?: string; paths?: string[] }>;
     };
 
-    expect(config.artifacts).toEqual([{ app: "situations", paths: ["dist"] }]);
+    expect(config.artifacts).toEqual([
+      { app: "situations", platform: "darwin-arm64", paths: ["dist"] },
+    ]);
+  });
+
+  test("GitHub workflow gates on ci-required and publishes on a macOS runner", () => {
+    const wf = readFileSync(resolve(root, ".github/workflows/ci-required.yml"), "utf8");
+    expect(wf).toContain("name: ci-required");
+    expect(wf).toContain("EdgeVector/last-stack/.github/workflows/host-track-artifact.yml@main");
+    expect(wf).toContain("runs-on: macos-latest");
   });
 
   test("build script creates executable CLI aliases under dist", () => {

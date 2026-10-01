@@ -25,7 +25,10 @@ export type Situation = {
   slug: string;
   title: string;
   summary: string;
-  status: SituationStatus;
+  // "expired" is never persisted (normalizeStatus never accepts it as a
+  // write); findSituation/requireSituation compute it on read when an
+  // active/monitoring record's expires_at has passed.
+  status: SituationStatus | "expired";
   severity: Severity;
   scope_systems: string[];
   scope_repos: string[];
@@ -466,7 +469,15 @@ export function rowToSituation(row: QueryRow): Situation {
   );
 }
 
-export async function findSituation(
+/**
+ * Raw point-read, no expiry computation. Used internally by `upsertSituation`
+ * to read the existing stored record for a merge — a merge must see the
+ * literal persisted status, not a read-time "expired" decoration, or an
+ * unrelated field update on a lapsed record would normalize its status back
+ * to "active" (normalizeStatus falls back to "active" on any value it
+ * doesn't recognize, and "expired" is deliberately not a recognized value).
+ */
+async function fetchSituationRaw(
   node: NodeClient,
   cfg: Config,
   slug: string,
@@ -479,6 +490,27 @@ export async function findSituation(
   });
   const row = res.results[0];
   return row ? rowToSituation(row) : null;
+}
+
+/** Same expiry rule `activeSituations` filters by, exposed for a single record. */
+export function effectiveStatus(situation: Situation, at: Date = new Date()): SituationStatus | "expired" {
+  if (situation.status !== "active" && situation.status !== "monitoring") return situation.status;
+  if (!situation.expires_at) return situation.status;
+  const expires = Date.parse(situation.expires_at);
+  if (!Number.isFinite(expires)) return situation.status;
+  return expires > at.getTime() ? situation.status : "expired";
+}
+
+export async function findSituation(
+  node: NodeClient,
+  cfg: Config,
+  slug: string,
+  at: Date = new Date(),
+): Promise<Situation | null> {
+  const situation = await fetchSituationRaw(node, cfg, slug);
+  if (!situation) return null;
+  const status = effectiveStatus(situation, at);
+  return status === situation.status ? situation : { ...situation, status };
 }
 
 export async function requireSituation(
@@ -611,7 +643,7 @@ export async function upsertSituation(
   input: SituationInput,
   opts: { allowProseOnly?: boolean } = {},
 ): Promise<{ situation: Situation; action: "created" | "updated" }> {
-  const existing = await findSituation(node, cfg, input.slug);
+  const existing = await fetchSituationRaw(node, cfg, input.slug);
   const situation = normalizeSituation(input, existing ?? undefined);
   rejectConflictingActionLists(situation);
   // On the MERGED record, not just on the input: `put` patches, so a change that
@@ -632,10 +664,8 @@ export async function upsertSituation(
 
 export function activeSituations(situations: Situation[], at: Date = new Date()): Situation[] {
   return situations.filter((situation) => {
-    if (situation.status !== "active" && situation.status !== "monitoring") return false;
-    if (!situation.expires_at) return true;
-    const expires = Date.parse(situation.expires_at);
-    return !Number.isFinite(expires) || expires > at.getTime();
+    const status = effectiveStatus(situation, at);
+    return status === "active" || status === "monitoring";
   });
 }
 

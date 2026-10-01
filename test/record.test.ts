@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import {
   activeSituations,
+  effectiveStatus,
+  findSituation,
   normalizeSituation,
   preflight,
   rejectConflictingActionLists,
@@ -9,6 +11,7 @@ import {
   requireSituation,
   situationToFields,
   rowToSituation,
+  upsertSituation,
   type Situation,
 } from "../src/record.ts";
 import { FsituationsError } from "../src/client.ts";
@@ -265,5 +268,125 @@ describe("record mapping", () => {
     expect(first.updated_at).toBe("2026-07-12T18:49:06.950Z");
     expect(second.updated_at).toBe(first.updated_at);
     expect(updates).toEqual([]);
+  });
+});
+
+describe("expiry-aware status", () => {
+  function cfgFor(hash: string): Config {
+    return {
+      configVersion: 1,
+      nodeUrl: "http://127.0.0.1:9001",
+      schemaServiceUrl: "",
+      userHash: "test-user",
+      schemaHashes: { situation: hash },
+    };
+  }
+
+  function nodeWithStore(initial: Situation): {
+    node: NodeClient;
+    stored: () => Record<string, unknown>;
+  } {
+    let fields = situationToFields(initial);
+    const node: NodeClient = {
+      baseUrl: "http://127.0.0.1:9001",
+      userHash: "test-user",
+      async autoIdentity() {
+        return { provisioned: true, userHash: "test-user" };
+      },
+      async listSchemas() {
+        return [];
+      },
+      async declareAppSchema() {
+        throw new Error("not exercised by this fixture");
+      },
+      async createRecord() {
+        throw new Error("not exercised: record already exists");
+      },
+      async updateRecord({ fields: next }) {
+        fields = next;
+      },
+      async queryAll() {
+        return {
+          ok: true,
+          results: [{ fields, key: { hash: initial.slug, range: null } }],
+          returned_count: 1,
+          total_count: 1,
+        };
+      },
+    };
+    return { node, stored: () => fields };
+  }
+
+  test("findSituation/requireSituation report an expired active record as expired, not active", async () => {
+    const stored = baseSituation({
+      slug: "expiry-test-active",
+      status: "active",
+      expires_at: "2026-01-01T00:00:00.000Z",
+    });
+    const { node } = nodeWithStore(stored);
+    const cfg = cfgFor("test-situation-schema");
+    const at = new Date("2026-01-02T00:00:00.000Z");
+
+    const found = await findSituation(node, cfg, stored.slug, at);
+    expect(found?.status).toBe("expired");
+
+    // Regression shape for the original incident: nobody re-upserted the
+    // record after expires_at passed, so the stored row still literally
+    // says status=active. A direct `show` read must not repeat that claim.
+    expect(stored.status).toBe("active");
+  });
+
+  test("findSituation leaves an unexpired or non-active/monitoring record untouched", async () => {
+    const future = baseSituation({
+      slug: "expiry-test-future",
+      status: "monitoring",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+    expect(effectiveStatus(future)).toBe("monitoring");
+
+    const resolved = baseSituation({
+      slug: "expiry-test-resolved",
+      status: "resolved",
+      expires_at: "2026-01-01T00:00:00.000Z",
+    });
+    expect(effectiveStatus(resolved, new Date("2026-06-01T00:00:00.000Z"))).toBe("resolved");
+  });
+
+  test("activeSituations and findSituation agree on the same expired record", async () => {
+    const stored = baseSituation({
+      slug: "expiry-test-agree",
+      status: "active",
+      expires_at: "2026-01-01T00:00:00.000Z",
+    });
+    const at = new Date("2026-01-02T00:00:00.000Z");
+
+    expect(activeSituations([stored], at)).toEqual([]);
+
+    const { node } = nodeWithStore(stored);
+    const found = await findSituation(node, cfgFor("test-situation-schema"), stored.slug, at);
+    expect(found?.status).toBe("expired");
+  });
+
+  test("upsertSituation merges against the literal stored status, not the expiry-computed one", async () => {
+    const stored = baseSituation({
+      slug: "expiry-test-merge",
+      status: "monitoring",
+      expires_at: "2026-01-01T00:00:00.000Z",
+    });
+    const { node, stored: storedFields } = nodeWithStore(stored);
+    const cfg = cfgFor("test-situation-schema");
+
+    // Patch an unrelated field, long after expiry, without touching status.
+    const { situation } = await upsertSituation(node, cfg, {
+      slug: stored.slug,
+      summary: "Refreshed detail, lifetime not renewed.",
+    });
+
+    // If the merge read the expiry-computed "expired" value instead of the
+    // raw stored one, normalizeStatus would reject "expired" (not a
+    // recognized write value) and silently fall back to "active" — wrongly
+    // reactivating a lapsed fence as a side effect of an unrelated edit.
+    expect(situation.status).toBe("monitoring");
+    expect((storedFields() as { status?: unknown }).status).toBe("monitoring");
   });
 });

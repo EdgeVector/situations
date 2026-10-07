@@ -69,7 +69,14 @@ export type QueryResponse = {
   returned_count?: number;
 };
 
-export type QueryFilter = Record<string, string>;
+/**
+ * LastDB range filter forwarded under `/api/query` `filter`.
+ * `HashKey` is one key. `HashKeys` is a batch of keys. A scan does not exist.
+ */
+export type QueryFilter = {
+  HashKey?: string;
+  HashKeys?: string[];
+};
 
 type LoadedSchema = {
   name: string;
@@ -312,8 +319,8 @@ export function newNodeClient(opts: {
       // The SDK drains the node's `/api/query` pagination for us (the node caps
       // each page at DEFAULT_QUERY_LIMIT=100, so a plain query would silently
       // truncate a >100-row schema). `filter` is fsituations' optional range
-      // filter (e.g. `{ HashKey: slug }`), forwarded verbatim under the query's
-      // `filter` key by the SDK.
+      // filter (`{ HashKey: slug }` or `{ HashKeys: keys }`), forwarded
+      // verbatim under the query's `filter` key by the SDK.
       const sdkFilter: Omit<SdkQueryFilter, "limit" | "offset" | "cursor"> = {
         fields,
         ...(filter ? { filter: filter as SdkJsonValue } : {}),

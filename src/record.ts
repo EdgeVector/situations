@@ -1,7 +1,13 @@
 import { FsituationsError, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import { fieldsFor, SEVERITY_VALUES, STATUS_VALUES, type Severity, type SituationStatus } from "./schemas.ts";
-import { hasIndexSchema, readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
+import {
+  hasIndexSchema,
+  readIndexPayload,
+  readIndexPayloads,
+  requireIndexSchema,
+  writeIndexPayload,
+} from "./index-cache.ts";
 
 const ACTIVE_SITUATIONS_INDEX_KEY = "active_situations";
 const SITUATION_HISTORY_DAYS_INDEX_KEY = "situation_history_days";
@@ -563,8 +569,10 @@ export async function listSituations(node: NodeClient, cfg: Config): Promise<Sit
     const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });
     bySlug.set(situation.slug, situation);
   }
+  const dayKeys = days.map(situationHistoryDayKey);
+  const buckets = await readIndexPayloads<Situation[]>(node, cfg, dayKeys);
   for (const day of days) {
-    const bucket = await readIndexPayload<Situation[]>(node, cfg, situationHistoryDayKey(day));
+    const bucket = buckets.get(situationHistoryDayKey(day));
     if (!bucket) continue;
     for (const raw of bucket) {
       const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });

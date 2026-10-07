@@ -19,6 +19,8 @@ const TARGETS: SchemaTarget[] = [
   { key: "index", schema: indexSchema },
 ];
 
+type LoadedSchema = Awaited<ReturnType<NodeClient["listSchemas"]>>[number];
+
 /**
  * Prefer already-loaded registered schemas; otherwise ask Mini to resolve or
  * register them with Schema Service via POST /api/apps/declare-schema (the
@@ -30,8 +32,9 @@ export async function resolveOrDeclareSchemaHashes(
   opts: { quiet?: boolean } = {},
 ): Promise<Partial<Record<RecordType, string>>> {
   const hashes: Partial<Record<RecordType, string>> = {};
+  const loaded = await node.listSchemas();
   for (const target of TARGETS) {
-    const existing = await resolveLoadedHash(node, target);
+    const existing = resolveLoadedHash(loaded, target);
     if (existing) {
       hashes[target.key] = existing;
       continue;
@@ -59,14 +62,10 @@ export async function resolveOrDeclareSchemaHashes(
 }
 
 export async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {
-  return resolveLoadedHash(node, { key: "situation", schema: situationSchema });
+  return resolveLoadedHash(await node.listSchemas(), { key: "situation", schema: situationSchema });
 }
 
-async function resolveLoadedHash(
-  node: NodeClient,
-  target: SchemaTarget,
-): Promise<string | null> {
-  const loaded = await node.listSchemas();
+function resolveLoadedHash(loaded: LoadedSchema[], target: SchemaTarget): string | null {
   const candidates = loaded.filter(
     (schema) =>
       schema.owner_app_id === OWNER_APP_ID &&

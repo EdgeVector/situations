@@ -4,7 +4,7 @@
 // the hot agent-facing reads (preflight, default `list`/`notices`) never pay
 // for a full-history scan of the Situation/Notice schemas.
 
-import { FsituationsError, type NodeClient } from "./client.ts";
+import { FsituationsError, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 
 const INDEX_QUERY_FIELDS = ["key", "payload_json", "updated_at"];
@@ -22,6 +22,20 @@ export function requireIndexSchema(cfg: { schemaHashes: Record<string, string> }
   });
 }
 
+function payloadFromRow<T>(row: QueryRow): T | null {
+  try {
+    return JSON.parse(String(row.fields.payload_json ?? "null")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function rowIndexKey(row: QueryRow): string | null {
+  if (typeof row.key.hash === "string" && row.key.hash.length > 0) return row.key.hash;
+  const fieldKey = row.fields.key;
+  return typeof fieldKey === "string" && fieldKey.length > 0 ? fieldKey : null;
+}
+
 /** Returns null when the schema isn't declared yet, or the row hasn't been seeded. */
 export async function readIndexPayload<T>(
   node: NodeClient,
@@ -36,11 +50,40 @@ export async function readIndexPayload<T>(
   });
   const row = res.results[0];
   if (!row) return null;
-  try {
-    return JSON.parse(String(row.fields.payload_json ?? "null")) as T;
-  } catch {
-    return null;
+  return payloadFromRow<T>(row);
+}
+
+/**
+ * One Index HashKeys query for every supplied key. Empty key list is a no-op.
+ * Missing rows and unparseable payloads are omitted from the map.
+ */
+export async function readIndexPayloads<T>(
+  node: NodeClient,
+  cfg: Config,
+  keys: string[],
+): Promise<Map<string, T>> {
+  const out = new Map<string, T>();
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(key);
   }
+  if (!hasIndexSchema(cfg) || unique.length === 0) return out;
+  const res = await node.queryAll({
+    schemaHash: schemaHashFor("index", cfg),
+    fields: INDEX_QUERY_FIELDS,
+    filter: { HashKeys: unique },
+  });
+  for (const row of res.results) {
+    const key = rowIndexKey(row);
+    if (!key) continue;
+    const payload = payloadFromRow<T>(row);
+    if (payload === null) continue;
+    out.set(key, payload);
+  }
+  return out;
 }
 
 /** No-op when the schema isn't declared yet (pre-upgrade config). */

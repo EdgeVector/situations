@@ -25,14 +25,18 @@ function baseConfig(): Config {
   };
 }
 
+type QueryCall = { schemaHash: string; filter?: QueryFilter };
+
 /**
  * In-memory node double: point-reads (`filter.HashKey`) hit a single row;
+ * `filter.HashKeys` hits those rows (keyed batch, not a scan);
  * anything else is a full-table scan, counted so tests can assert the hot
  * paths never trigger one.
  */
 function makeNode(): {
   node: NodeClient;
   fullScans: () => number;
+  queries: () => QueryCall[];
 } {
   const stores = new Map<string, Map<string, Record<string, unknown>>>([
     [SITUATION_HASH, new Map()],
@@ -40,6 +44,7 @@ function makeNode(): {
     [INDEX_HASH, new Map()],
   ]);
   let fullScans = 0;
+  const queries: QueryCall[] = [];
 
   function storeFor(schemaHash: string): Map<string, Record<string, unknown>> {
     const store = stores.get(schemaHash);
@@ -48,9 +53,23 @@ function makeNode(): {
   }
 
   function hashKeyOf(filter?: QueryFilter): string | undefined {
-    if (!filter || typeof filter !== "object") return undefined;
-    const value = (filter as Record<string, unknown>).HashKey;
-    return typeof value === "string" ? value : undefined;
+    return typeof filter?.HashKey === "string" ? filter.HashKey : undefined;
+  }
+
+  function hashKeysOf(filter?: QueryFilter): string[] | undefined {
+    return Array.isArray(filter?.HashKeys) ? filter.HashKeys : undefined;
+  }
+
+  function keyedResults(
+    store: Map<string, Record<string, unknown>>,
+    keys: string[],
+  ): QueryResponse {
+    const results = [];
+    for (const key of keys) {
+      const row = store.get(key);
+      if (row) results.push({ fields: row, key: { hash: key, range: null } });
+    }
+    return { ok: true, results, returned_count: results.length, total_count: results.length };
   }
 
   const node: NodeClient = {
@@ -72,12 +91,15 @@ function makeNode(): {
       storeFor(schemaHash).set(keyHash, fields);
     },
     async queryAll({ schemaHash, filter }): Promise<QueryResponse> {
+      queries.push({ schemaHash, filter });
       const store = storeFor(schemaHash);
       const key = hashKeyOf(filter);
       if (key !== undefined) {
-        const row = store.get(key);
-        const results = row ? [{ fields: row, key: { hash: key, range: null } }] : [];
-        return { ok: true, results, returned_count: results.length, total_count: results.length };
+        return keyedResults(store, [key]);
+      }
+      const keys = hashKeysOf(filter);
+      if (keys !== undefined) {
+        return keyedResults(store, keys);
       }
       fullScans += 1;
       const results = [...store.entries()].map(([hash, fields]) => ({
@@ -88,7 +110,7 @@ function makeNode(): {
     },
   };
 
-  return { node, fullScans: () => fullScans };
+  return { node, fullScans: () => fullScans, queries: () => queries };
 }
 
 describe("listActiveSituationsIndexed", () => {
@@ -305,5 +327,95 @@ describe("listNoticesIndexed", () => {
     const all = await listNotices(node, cfg);
     expect(all.map((n) => n.slug)).toEqual(["n1"]);
     expect(fullScans()).toBe(0);
+  });
+});
+
+describe("history day-bucket HashKeys batch", () => {
+  test("empty day list does not send a HashKeys query", async () => {
+    const cfg = baseConfig();
+    const { node, fullScans, queries } = makeNode();
+    const situations = await listSituations(node, cfg);
+    const notices = await listNotices(node, cfg);
+    expect(situations).toEqual([]);
+    expect(notices).toEqual([]);
+    expect(fullScans()).toBe(0);
+    expect(queries().filter((q) => Array.isArray(q.filter?.HashKeys))).toHaveLength(0);
+  });
+
+  test("N situation day keys produce one HashKeys query and zero per-day HashKey Index reads", async () => {
+    const cfg = baseConfig();
+    const { node, fullScans, queries } = makeNode();
+
+    await upsertSituation(node, cfg, {
+      slug: "s1",
+      title: "s1",
+      status: "active",
+      created_at: "2026-07-17T12:00:00.000Z",
+    });
+    await upsertSituation(node, cfg, {
+      slug: "s2",
+      title: "s2",
+      status: "resolved",
+      created_at: "2026-07-18T12:00:00.000Z",
+    });
+    await upsertSituation(node, cfg, {
+      slug: "s3",
+      title: "s3",
+      status: "archived",
+      created_at: "2026-07-19T12:00:00.000Z",
+    });
+
+    const before = queries().length;
+    const all = await listSituations(node, cfg);
+    const listing = queries().slice(before);
+
+    expect(all.map((s) => s.slug).sort()).toEqual(["s1", "s2", "s3"]);
+    expect(fullScans()).toBe(0);
+
+    const hashKeysQueries = listing.filter((q) => Array.isArray(q.filter?.HashKeys));
+    expect(hashKeysQueries).toHaveLength(1);
+    expect(hashKeysQueries[0]?.schemaHash).toBe(INDEX_HASH);
+    expect(hashKeysQueries[0]?.filter?.HashKeys).toEqual([
+      "situation_history_day:2026-07-19",
+      "situation_history_day:2026-07-18",
+      "situation_history_day:2026-07-17",
+    ]);
+
+    const perDayHashKey = listing.filter((q) => {
+      const key = q.filter?.HashKey;
+      return typeof key === "string" && key.startsWith("situation_history_day:");
+    });
+    expect(perDayHashKey).toHaveLength(0);
+  });
+
+  test("N notice day keys produce one HashKeys query and zero per-day HashKey Index reads", async () => {
+    const cfg = baseConfig();
+    const { node, fullScans, queries } = makeNode();
+
+    await upsertNotice(node, cfg, { slug: "n1", title: "t", at: "2026-07-17T12:00:00.000Z" });
+    await upsertNotice(node, cfg, { slug: "n2", title: "t", at: "2026-07-18T12:00:00.000Z" });
+    await upsertNotice(node, cfg, { slug: "n3", title: "t", at: "2026-07-19T12:00:00.000Z" });
+
+    const before = queries().length;
+    const all = await listNotices(node, cfg);
+    const listing = queries().slice(before);
+
+    expect(all.map((n) => n.slug).sort()).toEqual(["n1", "n2", "n3"]);
+    expect(fullScans()).toBe(0);
+
+    const hashKeysQueries = listing.filter((q) => Array.isArray(q.filter?.HashKeys));
+    expect(hashKeysQueries).toHaveLength(1);
+    expect(hashKeysQueries[0]?.schemaHash).toBe(INDEX_HASH);
+    expect(hashKeysQueries[0]?.filter?.HashKeys).toEqual([
+      "notice_history_day:2026-07-19",
+      "notice_history_day:2026-07-18",
+      "notice_history_day:2026-07-17",
+    ]);
+
+    const perDayHashKey = listing.filter((q) => {
+      const key = q.filter?.HashKey;
+      return typeof key === "string" && key.startsWith("notice_history_day:");
+    });
+    expect(perDayHashKey).toHaveLength(0);
   });
 });

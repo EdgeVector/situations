@@ -8,7 +8,12 @@ import {
   type NoticeSeverityHint,
 } from "./schemas.ts";
 import { nowIso, validateSlug } from "./record.ts";
-import { readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
+import {
+  readIndexPayload,
+  readIndexPayloads,
+  requireIndexSchema,
+  writeIndexPayload,
+} from "./index-cache.ts";
 
 const RECENT_NOTICES_INDEX_KEY = "recent_notices";
 const NOTICE_HISTORY_DAYS_INDEX_KEY = "notice_history_days";
@@ -279,9 +284,11 @@ async function listNoticesHistoryIndexed(
   const floorMs = opts.since ? Date.now() - parseSinceDuration(opts.since) : null;
   const wantedDays =
     floorMs === null ? days : days.filter((day) => dayCouldContainSince(day, floorMs));
+  const dayKeys = wantedDays.map(noticeHistoryDayKey);
+  const buckets = await readIndexPayloads<Notice[]>(node, cfg, dayKeys);
   const notices: Notice[] = [];
   for (const day of wantedDays) {
-    const bucket = await readIndexPayload<Notice[]>(node, cfg, noticeHistoryDayKey(day));
+    const bucket = buckets.get(noticeHistoryDayKey(day));
     if (!bucket) continue;
     notices.push(...bucket.map((n) => normalizeNotice(n)));
   }

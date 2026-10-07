@@ -53,30 +53,35 @@ describe("resolveLoadedSituationHash", () => {
 
 describe("resolveOrDeclareSchemaHashes", () => {
   test("returns both hashes when both already loaded", async () => {
+    let listCalls = 0;
     const node = mockNode({
-      listSchemas: async () => [
-        {
-          name: "sit-hash",
-          descriptive_name: situationSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...situationSchema.schema.fields],
-        },
-        {
-          name: "notice-hash",
-          descriptive_name: noticeSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...noticeSchema.schema.fields],
-        },
-        {
-          name: "index-hash",
-          descriptive_name: indexSchema.schema.descriptive_name,
-          owner_app_id: OWNER_APP_ID,
-          fields: [...indexSchema.schema.fields],
-        },
-      ],
+      listSchemas: async () => {
+        listCalls += 1;
+        return [
+          {
+            name: "sit-hash",
+            descriptive_name: situationSchema.schema.descriptive_name,
+            owner_app_id: OWNER_APP_ID,
+            fields: [...situationSchema.schema.fields],
+          },
+          {
+            name: "notice-hash",
+            descriptive_name: noticeSchema.schema.descriptive_name,
+            owner_app_id: OWNER_APP_ID,
+            fields: [...noticeSchema.schema.fields],
+          },
+          {
+            name: "index-hash",
+            descriptive_name: indexSchema.schema.descriptive_name,
+            owner_app_id: OWNER_APP_ID,
+            fields: [...indexSchema.schema.fields],
+          },
+        ];
+      },
     });
     const hashes = await resolveOrDeclareSchemaHashes(node, { quiet: true });
     expect(hashes).toEqual({ situation: "sit-hash", notice: "notice-hash", index: "index-hash" });
+    expect(listCalls).toBe(1);
   });
 
   test("leaves hashes unset when declare-schema is unsupported (404)", async () => {

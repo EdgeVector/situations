@@ -26,5 +26,5 @@
       "@lastdb/app-sdk": ["./vendor/lastdb-app-sdk"]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

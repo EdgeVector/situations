@@ -14,7 +14,6 @@
     "situations": "bun src/cli.ts",
     "fsituations": "bun src/cli.ts",
     "install-shim": "sh scripts/install-shim.sh",
-    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

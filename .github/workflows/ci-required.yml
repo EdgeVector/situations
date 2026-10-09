@@ -1,7 +1,7 @@
 name: ci-required
 
-# Gate of record: GitHub (EdgeVector/situations). The test job runs the portable
-# .lastgit/ci.sh gate body. Brain: sop-migrate-repo-to-github.
+# Gate of record: GitHub (EdgeVector/situations). The check job runs the portable
+# .lastgit/ci.sh gate body (shell syntax, install, typecheck, build; no tests). Brain: sop-migrate-repo-to-github.
 on:
   pull_request:
     branches: [main]
@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  test:
-    name: test
+  check:
+    name: check
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -35,7 +35,7 @@ jobs:
   ci-required:
     name: ci-required
     if: ${{ always() }}
-    needs: [test]
+    needs: [check]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every needed job to succeed

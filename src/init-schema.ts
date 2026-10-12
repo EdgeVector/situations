@@ -1,6 +1,7 @@
 import { FsituationsError, type NodeClient } from "./client.ts";
 import {
   OWNER_APP_ID,
+  indexEntrySchema,
   indexSchema,
   noticeSchema,
   situationSchema,
@@ -17,6 +18,7 @@ const TARGETS: SchemaTarget[] = [
   { key: "situation", schema: situationSchema },
   { key: "notice", schema: noticeSchema },
   { key: "index", schema: indexSchema },
+  { key: "index_entry", schema: indexEntrySchema },
 ];
 
 /**
@@ -31,31 +33,44 @@ export async function resolveOrDeclareSchemaHashes(
 ): Promise<Partial<Record<RecordType, string>>> {
   const hashes: Partial<Record<RecordType, string>> = {};
   for (const target of TARGETS) {
-    const existing = await resolveLoadedHash(node, target);
-    if (existing) {
-      hashes[target.key] = existing;
-      continue;
-    }
-    try {
-      const declared = await node.declareAppSchema(
-        OWNER_APP_ID,
-        target.schema.schema as unknown as Record<string, unknown>,
-      );
-      if (!opts.quiet) {
-        console.log(
-          `registered ${declared.schema} → ${declared.canonical}  (${declared.resolution})`,
-        );
-      }
-      hashes[target.key] = declared.canonical;
-    } catch (err) {
-      // Route missing / method not allowed → leave that key unset.
-      if (err instanceof FsituationsError && (err.code === "http_404" || err.code === "http_405")) {
-        continue;
-      }
-      throw err;
-    }
+    const hash = await resolveOrDeclareOne(node, target, opts);
+    if (hash) hashes[target.key] = hash;
   }
   return hashes;
+}
+
+/**
+ * Resolve one schema's canonical hash, declaring it when the node has not
+ * loaded it. Returns null when the node has no declare route (older nodes).
+ */
+async function resolveOrDeclareOne(
+  node: NodeClient,
+  target: SchemaTarget,
+  opts: { quiet?: boolean } = {},
+): Promise<string | null> {
+  const existing = await resolveLoadedHash(node, target);
+  if (existing) return existing;
+  try {
+    const declared = await node.declareAppSchema(
+      OWNER_APP_ID,
+      target.schema.schema as unknown as Record<string, unknown>,
+    );
+    if (!opts.quiet) {
+      console.log(`registered ${declared.schema} → ${declared.canonical}  (${declared.resolution})`);
+    }
+    return declared.canonical;
+  } catch (err) {
+    // Route missing / method not allowed → leave that key unset.
+    if (err instanceof FsituationsError && (err.code === "http_404" || err.code === "http_405")) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/** Resolve or declare the `IndexEntry` schema alone (the lazy pin on first write). */
+export async function resolveOrDeclareIndexEntryHash(node: NodeClient): Promise<string | null> {
+  return resolveOrDeclareOne(node, { key: "index_entry", schema: indexEntrySchema }, { quiet: true });
 }
 
 export async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {

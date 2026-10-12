@@ -277,3 +277,42 @@ payloads from `situations schema` on older nodes that lack declare-schema.
 
 The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
 and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.
+
+### Index layout (one atom stays under 64 KiB)
+
+A LastDB node refuses one atom above 64 KiB, and one field value is one atom.
+A list that grows is therefore never one field. Two schemas hold the indexes:
+
+- `fsituations/Index` (Hash, key `key`): one row, `recent_notices`, capped at
+  32 KiB serialized. The default `situations notices` read is one point read of
+  it. A `--since` window that reaches past the oldest notice a full row holds
+  reads the day partitions below instead.
+- `fsituations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one small
+  record per entry, at most 4 KiB. The partition (`ie_h`) is read with one range
+  query; one entry is added with one small write.
+
+| Partition (`ie_h`) | Entry key (`ie_r`) | Entry holds |
+|---|---|---|
+| `notice_history_day:<YYYY-MM-DD>` | notice slug | `at`, `created_at`, `expires_at`, `kind`, `scope_systems`, `scope_apps`, and the notice when it fits |
+| `notice_history_days` | `YYYY-MM-DD` | nothing |
+| `situation_history_day:<YYYY-MM-DD>` | situation slug | `created_at` |
+| `situation_history_days` | `YYYY-MM-DD` | nothing |
+| `active_situations` | situation slug | `status`, `severity`, `updated_at`, `expires_at`, and the situation when it fits |
+
+An entry carries the whole notice or situation only when the entry stays under
+4 KiB, which every real one does (about 1 KiB). One record is 14 to 21 fields,
+and each field is an atom the node loads and keeps in its warm set, against one
+atom for the entry. A notice or situation that does not fit is read from its
+record by slug with one multi-get (`HashRangeKeys`); `situation_history_day`
+entries always are. `put` and `notice` write the record and its entries in ONE
+batch (`POST /api/mutations/batch`), so an entry never lags its record and a
+record is never missing from its index.
+
+Upgrade from the old layout is lazy, per partition, and never deletes. The old
+`Index` blobs (`active_situations`, `notice_history_day:*`, `situation_history_day:*`,
+`*_history_days`) stay on the node and are read once: the first read or write
+that finds a partition without its `__migrated__` marker copies the blob's
+entries into the partition with one batch write that ends with the marker. After
+that the blob is never read or written. Until the config pins `IndexEntry`
+(`situations init`, or the first `put`/`notice`, which declares and pins it),
+reads keep answering from the old blobs.

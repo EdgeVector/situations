@@ -53,7 +53,7 @@ import {
   publishPostureStatus,
   type DeliveryRecipient,
 } from "./publish-status.ts";
-import { indexSchema, noticeSchema, situationSchema } from "./schemas.ts";
+import { indexEntrySchema, indexSchema, noticeSchema, situationSchema } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
 
@@ -63,8 +63,8 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json (declares Situation + Notice + Index schemas on Mini)
-  schema               print Situation, Notice, and/or Index schema JSON
+  init                 write ~/.situations/config.json (declares Situation + Notice + Index + IndexEntry schemas on Mini)
+  schema               print Situation, Notice, Index, and/or IndexEntry schema JSON
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
   show <slug>          show one situation (--json, --field)
@@ -232,7 +232,7 @@ Examples:
   situations notices --since 30m --system lastdbd
   situations notices --field slug,at,kind,title`;
     case "schema":
-      return `situations schema [--type situation|notice|index|all] [--json]
+      return `situations schema [--type situation|notice|index|index_entry|all] [--json]
 
 Print the schema payload(s) for publishing/loading. Default is all.`;
     case "publish-status":
@@ -449,12 +449,19 @@ function schemaCmd(rest: string[]): number {
   if (type === "situation") payload = situationSchema;
   else if (type === "notice") payload = noticeSchema;
   else if (type === "index") payload = indexSchema;
-  else if (type === "all") payload = { situation: situationSchema, notice: noticeSchema, index: indexSchema };
-  else {
+  else if (type === "index_entry" || type === "index-entry") payload = indexEntrySchema;
+  else if (type === "all") {
+    payload = {
+      situation: situationSchema,
+      notice: noticeSchema,
+      index: indexSchema,
+      index_entry: indexEntrySchema,
+    };
+  } else {
     throw new FsituationsError({
       code: "invalid_type",
       message: `Unknown --type "${type}".`,
-      hint: "Use situation, notice, index, or all.",
+      hint: "Use situation, notice, index, index_entry, or all.",
     });
   }
   console.log(JSON.stringify(payload, null, 2));
@@ -506,6 +513,7 @@ async function initCmd(rest: string[]): Promise<number> {
   const situationHash = parsed.values["schema-hash"] ?? declared.situation;
   const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
   const indexHash = declared.index;
+  const indexEntryHash = declared.index_entry;
 
   if (!situationHash) {
     throw new FsituationsError({
@@ -518,6 +526,7 @@ async function initCmd(rest: string[]): Promise<number> {
   const schemaHashes: Record<string, string> = { situation: situationHash };
   if (noticeHash) schemaHashes.notice = noticeHash;
   if (indexHash) schemaHashes.index = indexHash;
+  if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
 
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
@@ -533,6 +542,7 @@ async function initCmd(rest: string[]): Promise<number> {
     schemaHash: situationHash,
     noticeSchemaHash: noticeHash ?? null,
     indexSchemaHash: indexHash ?? null,
+    indexEntrySchemaHash: indexEntryHash ?? null,
     userHash: identity.userHash,
   };
   if (parsed.values.json) {
@@ -547,6 +557,11 @@ async function initCmd(rest: string[]): Promise<number> {
     if (!indexHash) {
       console.error(
         "warning: Index schema not declared/loaded — list/preflight/notices require re-init on Mini; product-schema scans are not supported.",
+      );
+    }
+    if (!indexEntryHash) {
+      console.error(
+        "warning: IndexEntry schema not declared/loaded — history and the active set read the legacy Index blobs until re-init on Mini.",
       );
     }
   }
@@ -944,6 +959,9 @@ async function noticesCmd(rest: string[]): Promise<number> {
   const all = await listNoticesIndexed(node, cfg, {
     all: parsed.values.all,
     since: parsed.values.since,
+    system: parsed.values.system,
+    app: parsed.values.app,
+    kind: parsed.values.kind,
   });
   const visible = filterNotices(all, {
     all: parsed.values.all,

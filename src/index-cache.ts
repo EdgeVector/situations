@@ -1,11 +1,13 @@
 // Thin point-read/point-write helpers over the optional `Index` schema (see
-// schemas.ts). Each row is a small named JSON blob (e.g. `active_situations`,
-// `recent_notices`) that record.ts/notice.ts keep patched on every upsert, so
-// the hot agent-facing reads (preflight, default `list`/`notices`) never pay
-// for a full-history scan of the Situation/Notice schemas.
+// schemas.ts). Each row is a small named JSON blob. `recent_notices` is the one
+// key still written; notice.ts keeps it patched on every upsert so the default
+// `notices` read never pays for a full-history scan of the Notice schema. The
+// other keys (`active_situations`, `*_history_day*`) are legacy blobs that
+// index-entry.ts reads once to seed `IndexEntry` and never touches again.
 
-import { FsituationsError, type NodeClient } from "./client.ts";
+import { FsituationsError, type BatchMutationOp, type NodeClient } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
+import { ATOM_BUDGET_BYTES, atomBytes } from "./atom-size.ts";
 
 const INDEX_QUERY_FIELDS = ["key", "payload_json", "updated_at"];
 
@@ -43,28 +45,32 @@ export async function readIndexPayload<T>(
   }
 }
 
-/** No-op when the schema isn't declared yet (pre-upgrade config). */
-export async function writeIndexPayload(
-  node: NodeClient,
-  cfg: Config,
-  key: string,
-  payload: unknown,
-): Promise<void> {
-  if (!hasIndexSchema(cfg)) return;
-  const hash = schemaHashFor("index", cfg);
-  const fields = {
-    key,
-    payload_json: JSON.stringify(payload),
-    updated_at: new Date().toISOString(),
-  };
-  const existing = await node.queryAll({
-    schemaHash: hash,
-    fields: ["key"],
-    filter: { HashKey: key },
-  });
-  if (existing.results[0]) {
-    await node.updateRecord({ schemaHash: hash, fields, keyHash: key });
-  } else {
-    await node.createRecord({ schemaHash: hash, fields, keyHash: key });
+/**
+ * The batch write that stores `payload` under `key`, or null when the schema is
+ * not declared yet (pre-upgrade config). It is an upsert, so no read comes
+ * first. The caller puts it in the same batch as the record write that made it
+ * stale, so the two commit together.
+ *
+ * One `payload_json` value is one atom, and the node refuses an atom above
+ * 64 KiB. This is the last line of defense: the only key still written here,
+ * `recent_notices`, is capped at 32 KiB by its own writer, and a write that
+ * would pass 48 KiB stops here with a name for the problem instead of a bare
+ * HTTP 413 that also fails the record write batched with it.
+ */
+export function indexRowOp(cfg: Config, key: string, payload: unknown): BatchMutationOp | null {
+  if (!hasIndexSchema(cfg)) return null;
+  const payloadJson = JSON.stringify(payload);
+  if (atomBytes(payloadJson) > ATOM_BUDGET_BYTES) {
+    throw new FsituationsError({
+      code: "index_payload_too_large",
+      message: `Index row "${key}" would be ${atomBytes(payloadJson)} bytes; one atom may not pass ${ATOM_BUDGET_BYTES}.`,
+      hint: "A list that grows belongs in IndexEntry (one record per entry), not in one Index row.",
+    });
   }
+  return {
+    mutationType: "update",
+    schemaHash: schemaHashFor("index", cfg),
+    keyHash: key,
+    fields: { key, payload_json: payloadJson, updated_at: new Date().toISOString() },
+  };
 }

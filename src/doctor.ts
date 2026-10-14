@@ -53,7 +53,12 @@ export async function runDoctor(node: NodeClient, cfg: Config): Promise<DoctorCh
         checks.push({
           name,
           status: "fail",
-          detail: `${detail}. The legacy row is NEWER than the copy: an older situations binary wrote it. Reads merge it, but run one binary (\`command -v situations\`)`,
+          detail:
+            `${detail}. The legacy row is NEWER than the copy: an older situations binary wrote it. Reads read its entries from their records, ` +
+            (info.contested.length > 0
+              ? `and ${info.contested.length} stored entr${info.contested.length === 1 ? "y" : "ies"} (${info.contested.join(", ")}) ${info.contested.length === 1 ? "stays" : "stay"} decided from the record until each is put again. `
+              : "") +
+            "Run one binary (`command -v situations`)",
         });
       } else if (info.missingListed.length > 0) {
         checks.push({

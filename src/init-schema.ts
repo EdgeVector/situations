@@ -80,9 +80,11 @@ async function resolveOrDeclareOne(
  */
 export async function resolveLoadedLayoutHashes(
   node: NodeClient,
-): Promise<{ index_entry: string | null; notice_history: string | null }> {
+): Promise<{ index: string | null; index_entry: string | null; notice_history: string | null }> {
   const loaded = await node.listSchemas();
   return {
+    // The legacy Index schema: loaded when any schema of ours carries its name.
+    index: pickLoadedHash(loaded, { key: "index", schema: indexSchema }),
     index_entry: pickLoadedHash(loaded, { key: "index_entry", schema: indexEntrySchema }, true),
     notice_history: pickLoadedHash(loaded, { key: "notice_history", schema: noticeHistorySchema }, true),
   };

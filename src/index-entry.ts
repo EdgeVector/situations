@@ -37,7 +37,13 @@
 //      merged in (hydrated from the records) and the marker is rewritten.
 //   4. An entry that cannot be parsed, or that points at no record, THROWS.
 //      Preflight is the fleet's gate and fails closed; a skipped entry is a
-//      skipped hold.
+//      skipped hold. (A listed id with no entry and no record is simply gone.)
+//   5. An entry written by a migration or a drift repair is UNTRUSTED: it is a
+//      snapshot from a blob an older binary may have written, and a stale
+//      process can write it with a LATER write time than a newer entry, so it
+//      wins. A reader decides liveness for an untrusted entry from the RECORD,
+//      never from the entry. A migration writes only ids that are absent, and
+//      never rewrites an entry that already exists.
 
 import {
   FsituationsError,
@@ -86,8 +92,12 @@ export function unreadable(where: string, why: string): FsituationsError {
 // Stores: the two entry schemas
 // ---------------------------------------------------------------------------
 
-/** `entry` = IndexEntry (no TTL). `notice` = NoticeHistory (the TTL-ready log). */
-export type StoreKind = "entry" | "notice";
+/**
+ * `entry` = IndexEntry (no TTL, entry key = id). `notice` = NoticeHistory (the
+ * TTL-ready log). `long` = IndexEntry, entry key `<20-digit seconds>#<slug>`
+ * (the long-lived notices; no TTL).
+ */
+export type StoreKind = "entry" | "notice" | "long";
 
 type StoreDef = {
   configKey: string;
@@ -100,12 +110,23 @@ type StoreDef = {
 };
 
 /** Year 2286 as unix seconds: a marker key a TTL will never reach. */
-const FAR_FUTURE_SECONDS = 9_999_999_999;
+export const FAR_FUTURE_SECONDS = 9_999_999_999;
 const SECONDS_DIGITS = 20;
 
-/** Unix seconds zero-padded to the 20 digits a node TTL reads from the front of a range key. */
+/**
+ * Unix seconds zero-padded to the 20 digits a node TTL reads from the front of a
+ * range key. A negative or non-finite time THROWS: clamped to 0 it would be the
+ * oldest key there is, and a TTL would delete the entry at once.
+ */
 export function padSeconds(seconds: number): string {
-  return String(Math.max(0, Math.floor(seconds))).padStart(SECONDS_DIGITS, "0");
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new FsituationsError({
+      code: "invalid_entry_time",
+      message: `Cannot key an index entry by the time ${seconds}: it is not a unix time at or after 1970.`,
+      hint: "A notice needs a real `created_at` and `expires_at`; fix the timestamp and retry.",
+    });
+  }
+  return String(Math.floor(seconds)).padStart(SECONDS_DIGITS, "0");
 }
 
 /** The NoticeHistory range key: `<20-digit unix seconds of created_at>#<slug>`. */
@@ -131,6 +152,16 @@ const STORES: Record<StoreKind, StoreDef> = {
       return at >= 0 ? range.slice(at + 1) : range;
     },
   },
+  long: {
+    configKey: "index_entry",
+    fields: { h: "ie_h", r: "ie_r", payload: "ie_payload", marker: "ie_marker" },
+    markerToken: INDEX_ENTRY_MARKER,
+    markerRange: (chunk) => `${padSeconds(FAR_FUTURE_SECONDS)}#${INDEX_ENTRY_MIGRATED_PREFIX}${chunk}`,
+    idOf: (range) => {
+      const at = range.indexOf("#");
+      return at >= 0 ? range.slice(at + 1) : range;
+    },
+  },
 };
 
 function isMarkerRange(store: StoreKind, range: string): boolean {
@@ -141,34 +172,47 @@ function isMarkerRange(store: StoreKind, range: string): boolean {
 export type Layout = { entry: string; notice: string };
 
 function schemaOf(layout: Layout, store: StoreKind): string {
-  return store === "entry" ? layout.entry : layout.notice;
+  return store === "notice" ? layout.notice : layout.entry;
 }
 
-const layoutMemo = new WeakMap<object, Promise<Layout | null>>();
+type LayoutInfo = {
+  layout: Layout | null;
+  /** The node reports the legacy `Index` schema as loaded. */
+  indexLoaded: boolean;
+};
+
+const layoutMemo = new WeakMap<object, Promise<LayoutInfo>>();
 
 /**
- * The entry layout, or null when the node does not have both schemas.
+ * The entry layout, or null when the node does not have both schemas, and
+ * whether the node reports the legacy `Index` schema as loaded.
  *
  * A config pin wins. With no pin the node's loaded schemas are used
  * (`GET /api/schemas`), so a config that cannot be written (a read-only home)
  * still reaches the entries: a writer that landed an entry must not leave a
  * reader looking at the frozen legacy blob. Never declares.
  */
-export function resolveLayout(node: NodeClient, cfg: Config): Promise<Layout | null> {
+export function resolveLayoutInfo(node: NodeClient, cfg: Config): Promise<LayoutInfo> {
   let pending = layoutMemo.get(cfg);
   if (!pending) {
     pending = (async () => {
+      const loaded = await resolveLoadedLayoutHashes(node);
       const pinnedEntry = cfg.schemaHashes[STORES.entry.configKey];
       const pinnedNotice = cfg.schemaHashes[STORES.notice.configKey];
-      if (pinnedEntry && pinnedNotice) return { entry: pinnedEntry, notice: pinnedNotice };
-      const loaded = await resolveLoadedLayoutHashes(node);
       const entry = pinnedEntry || loaded.index_entry;
       const notice = pinnedNotice || loaded.notice_history;
-      return entry && notice ? { entry, notice } : null;
+      return {
+        layout: entry && notice ? { entry, notice } : null,
+        indexLoaded: loaded.index !== null,
+      };
     })();
     layoutMemo.set(cfg, pending);
   }
   return pending;
+}
+
+export async function resolveLayout(node: NodeClient, cfg: Config): Promise<Layout | null> {
+  return (await resolveLayoutInfo(node, cfg)).layout;
 }
 
 /** The layout for a WRITE. A write without it fails: it would land a record no entry points at. */
@@ -177,8 +221,9 @@ export async function requireLayout(node: NodeClient, cfg: Config): Promise<Layo
   if (layout) return layout;
   throw new FsituationsError({
     code: "index_layout_missing",
-    message: "The node has not loaded the IndexEntry and NoticeHistory schemas, so this write cannot be indexed.",
-    hint: "Run `situations init` once (it declares and pins both schemas). A write never declares a schema itself.",
+    message:
+      "`situations init` has not been run on this node (IndexEntry and NoticeHistory are not loaded): run `situations init`, then retry.",
+    hint: "A write never declares a schema itself, so it fails before it writes anything; reads keep using the legacy blobs until init has run.",
   });
 }
 
@@ -236,14 +281,20 @@ export function legacyList(legacy: unknown, key: string): unknown[] {
 // Partitions
 // ---------------------------------------------------------------------------
 
-/** One entry: `id` is a slug or a day; `range` is the stored key (the id for IndexEntry). */
+/** One entry: `id` is a slug or a day; `range` is the stored key (the id for an `entry` store). */
 export type EntryDraft<T> = { id: string; range: string; payload: T };
 export type Entry<T> = EntryDraft<T> & {
   /**
-   * Served from a legacy blob, not from a stored entry. Its payload is a stale
-   * snapshot: a reader reads the record instead of trusting it.
+   * Not stored: served from a legacy blob for an id the marker lists. Its payload
+   * is a stale snapshot, so a reader reads the record, and a record that is gone
+   * means the id is gone (resolved, expired), not an error.
    */
   fromLegacy?: true;
+  /**
+   * Stored, but a legacy blob holds a NEWER version of it (an older binary wrote
+   * after the copy). A reader decides from the record.
+   */
+  decideFromRecord?: true;
 };
 
 export type PartitionSpec<T> = {
@@ -254,12 +305,27 @@ export type PartitionSpec<T> = {
   legacyKey: string | null;
   /** Gate partition: an old binary writing the blob after the migration is noticed. */
   checkDrift: boolean;
+  /**
+   * A marker lists an id that has no entry: serve it from the legacy blob (and
+   * the record). False for a log that a TTL may empty: a missing entry there is
+   * an expired one, and re-reading the blob would bring it back.
+   */
+  fillMissing: boolean;
+  /** Read only the entries whose range key is in [start, end] (an ordered range read), not the whole partition. */
+  range?: { start: string; end: string };
   /** The entries a legacy blob stands for. Throws on an item that is not an entry. */
   fromLegacy(legacy: unknown): Array<EntryDraft<T>>;
   /** One stored payload (parsed JSON, or "" for none) as a typed entry payload. Throws when unreadable. */
   coerce(stored: unknown, id: string): T;
-  /** The payload without its record copy, for an entry whose snapshot is not trusted. */
-  slim?(payload: T): T;
+  /**
+   * What a migration or a repair writes for a legacy snapshot: an UNTRUSTED
+   * entry (no copy of the record, flagged), decided from the record by readers.
+   */
+  untrusted?(payload: T): T;
+  /** A comparable version of a payload (an ISO time). A blob snapshot newer than a TRUSTED stored entry is contested. */
+  version?(payload: T): string;
+  /** A stored payload that is already decided from the record (an untrusted copy); it cannot be stale in a way that matters. */
+  isUntrusted?(payload: T): boolean;
 };
 
 export function putOp(
@@ -341,12 +407,13 @@ async function readRows(
   layout: Layout,
   store: StoreKind,
   hash: string,
+  range?: { start: string; end: string },
 ): Promise<Array<{ range: string; stored: unknown }>> {
   const def = STORES[store];
   const res = await node.queryAll({
     schemaHash: schemaOf(layout, store),
     fields: [def.fields.r, def.fields.payload],
-    filter: { HashKey: hash },
+    filter: range ? { HashRangeRange: { hash, start: range.start, end: range.end } } : { HashKey: hash },
     pageSize: PARTITION_PAGE_SIZE,
   });
   const out: Array<{ range: string; stored: unknown }> = [];
@@ -354,9 +421,9 @@ async function readRows(
     // The filter is an exact hash match; keep the check so a node that ever
     // widens it cannot leak another partition's entries into this one.
     if (row.key?.hash != null && row.key.hash !== hash) continue;
-    const range = rangeOf(row, def.fields.r);
-    if (range === null) continue;
-    out.push({ range, stored: parseStored(row.fields[def.fields.payload], `${hash}/${range}`) });
+    const r = rangeOf(row, def.fields.r);
+    if (r === null) continue;
+    out.push({ range: r, stored: parseStored(row.fields[def.fields.payload], `${hash}/${r}`) });
   }
   return out;
 }
@@ -518,8 +585,10 @@ export type PartitionInfo = {
   legacyEntries: number | null;
   /** The blob was written after the marker: an old binary wrote it. */
   drift: boolean;
-  /** Ids the marker lists that have no stored entry. */
+  /** Ids the marker lists that have no stored entry (after asking twice). */
   missingListed: string[];
+  /** Stored ids for which the blob holds a NEWER version: decided from the record. */
+  contested: string[];
 };
 
 export type PartitionState<T> = {
@@ -541,17 +610,8 @@ function uniqueDrafts<T>(drafts: Array<EntryDraft<T>>): Array<EntryDraft<T>> {
   return out;
 }
 
-/**
- * One partition: one range query, plus the legacy blob when the partition is not
- * known to be migrated (rules 1 to 3 at the top of this file).
- */
-export async function loadPartition<T>(
-  node: NodeClient,
-  cfg: Config,
-  layout: Layout,
-  spec: PartitionSpec<T>,
-): Promise<PartitionState<T>> {
-  const rows = await readRows(node, layout, spec.store, spec.hash);
+async function readStored<T>(node: NodeClient, layout: Layout, spec: PartitionSpec<T>) {
+  const rows = await readRows(node, layout, spec.store, spec.hash, spec.range);
   const stored: Array<Entry<T>> = [];
   const markerParts: Array<{ range: string; stored: unknown }> = [];
   for (const row of rows) {
@@ -564,7 +624,27 @@ export async function loadPartition<T>(
   }
   const marker = parseMarker(markerParts, spec.hash);
   const present = new Set(stored.map((entry) => entry.id));
-  const missingListed = marker.complete ? [...marker.ids].filter((id) => !present.has(id)) : [];
+  const missingListed =
+    marker.complete && spec.fillMissing ? [...marker.ids].filter((id) => !present.has(id)) : [];
+  return { stored, marker, present, missingListed };
+}
+
+/**
+ * One partition: one range query, plus the legacy blob when the partition is not
+ * known to be migrated (rules 1 to 3 and 5 at the top of this file).
+ */
+export async function loadPartition<T>(
+  node: NodeClient,
+  cfg: Config,
+  layout: Layout,
+  spec: PartitionSpec<T>,
+): Promise<PartitionState<T>> {
+  let { stored, marker, present, missingListed } = await readStored(node, layout, spec);
+  // A marker id with no entry cannot say "resolved" from "not synced" from "a
+  // page the node nulled". Ask a second time before it is believed.
+  if (missingListed.length > 0) {
+    ({ stored, marker, present, missingListed } = await readStored(node, layout, spec));
+  }
 
   const info: PartitionInfo = {
     hash: spec.hash,
@@ -576,6 +656,7 @@ export async function loadPartition<T>(
     legacyEntries: null,
     drift: false,
     missingListed,
+    contested: [],
   };
   const done = (entries: Array<Entry<T>>, migrationOps: BatchMutationOp[]) => ({
     entries,
@@ -607,51 +688,60 @@ export async function loadPartition<T>(
     legacy.updated_at > marker.migratedAt;
   const drafts = uniqueDrafts(spec.fromLegacy(legacy.payload));
   info.legacyEntries = drafts.length;
-  const slim = (payload: T): T => (spec.slim ? spec.slim(payload) : payload);
+  const untrusted = (payload: T): T => (spec.untrusted ? spec.untrusted(payload) : payload);
 
   // Rule 2: the marker is trusted for the ids it lists. A listed id with no
-  // entry yet comes from the blob, and the record is read for it.
+  // entry comes from the blob, and the record is read for it.
   if (marker.complete && !info.drift) {
     const listed = new Set(missingListed);
     const fill: Array<Entry<T>> = drafts
       .filter((draft) => listed.has(draft.id))
-      .map((draft) => ({ ...draft, payload: slim(draft.payload), fromLegacy: true as const }));
+      .map((draft) => ({ ...draft, payload: untrusted(draft.payload), fromLegacy: true as const }));
     return done([...stored, ...fill], []);
   }
 
-  // First copy, or a repair after drift.
+  // First copy, or a repair after drift. Rule 5: write ONLY the ids that are
+  // absent, as untrusted entries; an existing entry is never rewritten.
   if (drafts.length === 0) return done(stored, []);
-  const draftIds = new Set(drafts.map((draft) => draft.id));
-  const ops: BatchMutationOp[] = [];
-  let entries: Array<Entry<T>>;
-  if (info.drift) {
-    // The blob is newer than the entries it once seeded. Its snapshots are not
-    // trusted: every blob entry is stored without its record copy, so a reader
-    // reads the record.
-    entries = [
-      ...stored.filter((entry) => !draftIds.has(entry.id)),
-      ...drafts.map((draft) => ({ ...draft, payload: slim(draft.payload), fromLegacy: true as const })),
-    ];
+  const absent = drafts.filter((draft) => !present.has(draft.id));
+  const entries: Array<Entry<T>> = [...stored];
+  // A stored entry the blob holds a newer version of (an older binary wrote
+  // after the copy): decided from the record, and drift stays visible until a
+  // `put` refreshes the entry.
+  if (info.drift && spec.version) {
+    const byId = new Map(stored.map((entry) => [entry.id, entry]));
     for (const draft of drafts) {
-      ops.push(putOp(layout, spec.store, spec.hash, draft.range, slim(draft.payload)));
-    }
-  } else {
-    const missing = drafts.filter((draft) => !present.has(draft.id));
-    entries = [...stored, ...missing];
-    for (const draft of missing) {
-      ops.push(putOp(layout, spec.store, spec.hash, draft.range, draft.payload));
+      const have = byId.get(draft.id);
+      if (
+        have &&
+        !(spec.isUntrusted?.(have.payload) ?? false) &&
+        spec.version(draft.payload) > spec.version(have.payload)
+      ) {
+        have.decideFromRecord = true;
+        info.contested.push(draft.id);
+      }
     }
   }
-  ops.push(
-    ...markerOps(
-      layout,
-      spec.store,
-      spec.hash,
-      drafts.map((draft) => draft.id),
-      new Date().toISOString(),
-      marker.ranges,
-    ),
-  );
+  const ops: BatchMutationOp[] = [];
+  for (const draft of absent) {
+    const payload = untrusted(draft.payload);
+    entries.push({ ...draft, payload });
+    ops.push(putOp(layout, spec.store, spec.hash, draft.range, payload));
+  }
+  // The marker (and with it the end of the drift state) is rewritten only when
+  // no stored entry is contested.
+  if (info.contested.length === 0) {
+    ops.push(
+      ...markerOps(
+        layout,
+        spec.store,
+        spec.hash,
+        drafts.map((draft) => draft.id),
+        new Date().toISOString(),
+        marker.ranges,
+      ),
+    );
+  }
   return done(entries, ops);
 }
 
@@ -685,9 +775,10 @@ export async function readPartitions<T>(
 
 /**
  * Writes a WRITER puts in front of its own so the partition is safe to add to:
- * the legacy copy plus the marker, in the same batch as the new entry. Point
- * reads only (the marker, then the blob's `updated_at`): a notice write never
- * reads a whole day. A partition with no legacy row gets no marker and no ops.
+ * the legacy copy (absent ids only, untrusted) plus the marker, in the same batch
+ * as the new entry. Point reads only (the marker, then the blob's `updated_at`):
+ * a notice write never reads a whole day. A partition with no legacy row gets no
+ * marker and no ops.
  */
 export async function migrationOpsForWrite<T>(
   node: NodeClient,
@@ -708,6 +799,29 @@ export async function migrationOpsForWrite<T>(
   return (await loadPartition(node, cfg, layout, spec)).migrationOps;
 }
 
+/**
+ * Drop `id` from the marker's list (it was resolved, so it no longer has an
+ * entry): without this every later read would find a listed id with no entry and
+ * read the legacy blob for it. The marker is not an input to liveness, so a lost
+ * race (two writers rewrite one chunk) only costs a re-read, never a wrong answer.
+ * `migrated_at` is kept. One point-read, no ops when the id is not listed.
+ */
+export async function trimMarkerOps<T>(
+  node: NodeClient,
+  layout: Layout,
+  spec: PartitionSpec<T>,
+  id: string,
+): Promise<BatchMutationOp[]> {
+  const marker = await readMarkerPoint(node, layout, spec.store, spec.hash);
+  if (!marker.complete || !marker.ids.has(id) || marker.migratedAt === null) return [];
+  const rest = [...marker.ids].filter((other) => other !== id);
+  if (rest.length === 0) {
+    // Nothing left to list: remove the chunks (an empty marker would never exist).
+    return marker.ranges.map((range) => deleteOp(layout, spec.store, spec.hash, range));
+  }
+  return markerOps(layout, spec.store, spec.hash, rest, marker.migratedAt, marker.ranges);
+}
+
 /** The partition of days that hold history (`notice_history_days`, `situation_history_days`). */
 export function daysPartition(hash: string): PartitionSpec<string> {
   return {
@@ -715,6 +829,7 @@ export function daysPartition(hash: string): PartitionSpec<string> {
     hash,
     legacyKey: hash,
     checkDrift: true,
+    fillMissing: true,
     fromLegacy: (legacy) =>
       normalizeHistoryDays(legacyList(legacy, hash)).map((day) => ({
         id: day,
@@ -802,8 +917,16 @@ export async function hydrateBySlug<T>(
   return out;
 }
 
-/** Throw when an entry points at no record (rule 4): a skipped entry is a skipped hold. */
-export function requireAll<T>(found: Map<string, T>, slugs: readonly string[], what: string): void {
+/**
+ * Throw when an entry points at no record (rule 4): a skipped entry is a skipped
+ * hold. `fix` is the exact command that removes the entry.
+ */
+export function requireAll<T>(
+  found: Map<string, T>,
+  slugs: readonly string[],
+  what: string,
+  fix: (slug: string) => string,
+): void {
   const missing = [...new Set(slugs)].filter((slug) => !found.has(slug));
   if (missing.length === 0) return;
   throw new FsituationsError({
@@ -811,6 +934,6 @@ export function requireAll<T>(found: Map<string, T>, slugs: readonly string[], w
     message:
       `${missing.length} ${what} index entr${missing.length === 1 ? "y points" : "ies point"} at no record ` +
       `(first: ${missing[0]}).`,
-    hint: "The command stops instead of skipping an entry it cannot account for. Run `situations doctor`.",
+    hint: `The command stops instead of skipping an entry it cannot account for. To remove the entry: ${fix(missing[0]!)}`,
   });
 }

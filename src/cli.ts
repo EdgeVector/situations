@@ -44,6 +44,7 @@ import {
   renderNotice,
   renderNoticesList,
   requireNotice,
+  seedLongLivedNotices,
   upsertNotice,
   type NoticeInput,
 } from "./notice.ts";
@@ -63,6 +64,9 @@ import {
 } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
+
+// The default `situations notices` list shows the newest this many.
+const DEFAULT_NOTICE_LIMIT = 50;
 
 export const TOP_HELP = `situations — current operational posture + agent-impact notices over LastDB
 
@@ -234,6 +238,10 @@ Options:
   --all                include expired
   --json
   --field <a,b,c>      TSV projection (common: slug,at,kind,title,scope_systems)
+
+The default list (no --all, no --since) shows the 50 newest non-expired notices
+and ends with "N more notices; use --all or --since" (on stderr for --json and
+--field). --all and --since are not capped.
 
 Examples:
   situations notices
@@ -561,6 +569,26 @@ async function initCmd(rest: string[]): Promise<number> {
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath);
+  // One-time: the long-lived notices still live in the legacy `recent_notices`
+  // blob get their entries, so the default `notices` list shows them.
+  let seededLongLived = 0;
+  if (indexEntryHash && noticeHistoryHash) {
+    try {
+      const seedNode = newNodeClient({
+        baseUrl: nodeUrl,
+        userHash: identity.userHash,
+        socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
+      });
+      seededLongLived = await seedLongLivedNotices(seedNode, cfg, {
+        entry: indexEntryHash,
+        notice: noticeHistoryHash,
+      });
+    } catch (err) {
+      console.error(
+        `warning: could not seed the long-lived notices from the legacy blob: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   const result = {
     config: cfgPath,
     schemaHash: situationHash,
@@ -568,6 +596,7 @@ async function initCmd(rest: string[]): Promise<number> {
     indexSchemaHash: indexHash ?? null,
     indexEntrySchemaHash: indexEntryHash ?? null,
     noticeHistorySchemaHash: noticeHistoryHash ?? null,
+    seededLongLivedNotices: seededLongLived,
     userHash: identity.userHash,
   };
   if (parsed.values.json) {
@@ -1021,14 +1050,25 @@ async function noticesCmd(rest: string[]): Promise<number> {
     app: parsed.values.app,
     kind: parsed.values.kind,
   });
+  // The default list (no --all, no --since) is capped: agents read it at session
+  // start, and a busy day has hundreds of notices. --all and --since are not.
+  const capped = !parsed.values.all && !parsed.values.since && visible.length > DEFAULT_NOTICE_LIMIT;
+  const shown = capped ? visible.slice(0, DEFAULT_NOTICE_LIMIT) : visible;
+  const footer = capped
+    ? `${visible.length - DEFAULT_NOTICE_LIMIT} more notices; use --all or --since`
+    : null;
   if (fields.length > 0) {
-    printFieldProjection(visible as unknown as FieldProjectionSource[], fields, (line) =>
+    printFieldProjection(shown as unknown as FieldProjectionSource[], fields, (line) =>
       console.log(line),
     );
+    if (footer) console.error(footer);
   } else if (parsed.values.json) {
-    console.log(JSON.stringify(visible, null, 2));
+    // stdout stays one JSON array; the footer goes to stderr.
+    console.log(JSON.stringify(shown, null, 2));
+    if (footer) console.error(footer);
   } else {
-    console.log(renderNoticesList(visible));
+    console.log(renderNoticesList(shown));
+    if (footer) console.log(footer);
   }
   return 0;
 }

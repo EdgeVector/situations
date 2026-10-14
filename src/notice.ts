@@ -16,24 +16,33 @@ import {
   daysPartition,
   deleteOp,
   entryExists,
+  FAR_FUTURE_SECONDS,
   hydrateBySlug,
   legacyList,
   mapLimit,
   migrationOpsForWrite,
   normalizeHistoryDays,
   noticeRange,
+  padSeconds,
   putOp,
   readPartitions,
   requireAll,
   requireLayout,
   resolveLayout,
   unreadable,
+  type Entry,
   type Layout,
   type PartitionSpec,
 } from "./index-entry.ts";
 import { hasIndexSchema, readIndexPayload, requireIndexSchema } from "./index-cache.ts";
 
 const NOTICE_HISTORY_DAYS_KEY = "notice_history_days";
+// Notices the default list would miss by day (see `isLongLived`): one small entry
+// each, keyed by when they expire. IndexEntry, no TTL.
+const NOTICE_LONG_KEY = "notice_long_expiry";
+// A notice whose expiry is more than this after its `at` is long-lived (the default is 24 h).
+const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const CLOCK_SLACK_MS = 60_000;
 const NOTICE_HISTORY_DAY_PREFIX = "notice_history_day:";
 // LEGACY keys, read only (a node that has not loaded the entry schemas yet).
 const RECENT_NOTICES_LEGACY_KEY = "recent_notices";
@@ -373,6 +382,9 @@ function noticeDaySpec(day: string, legacyKnown = true): PartitionSpec<NoticeEnt
     hash: key,
     legacyKey: legacyKnown ? key : null,
     checkDrift: false,
+    // A log a TTL may empty: a listed id with no entry is an expired one, and
+    // reading the blob again would bring it back. Notices never gate anything.
+    fillMissing: false,
     fromLegacy(legacy) {
       return legacyList(legacy, key).map((raw) => {
         if (raw === null || typeof raw !== "object") {
@@ -383,7 +395,42 @@ function noticeDaySpec(day: string, legacyKnown = true): PartitionSpec<NoticeEnt
       });
     },
     coerce: coerceNoticeEntry,
-    slim: ({ notice: _copy, ...rest }) => rest,
+  };
+}
+
+/**
+ * A notice the default list would miss by day: its expiry is more than 24 h after
+ * its `at` (a custom `--expires-hours`; only revenant-watch uses 168 h), its `at`
+ * lies in the future when it is written, or it never expires. The default read
+ * covers the days of today and yesterday, so these also go to a small partition
+ * keyed by when they expire, which the default read includes.
+ */
+function isLongLived(notice: Notice, refMs: number): boolean {
+  const at = Date.parse(notice.at);
+  if (!Number.isFinite(at)) return false;
+  if (!notice.expires_at) return true;
+  const expires = Date.parse(notice.expires_at);
+  if (Number.isFinite(expires) && expires - at > DEFAULT_EXPIRY_MS + CLOCK_SLACK_MS) return true;
+  return at > refMs + CLOCK_SLACK_MS;
+}
+
+/** `<20-digit unix seconds of expires_at>#<slug>`; a notice with no expiry sorts last. */
+function longRange(notice: Notice): string {
+  const expires = notice.expires_at ? Date.parse(notice.expires_at) : Number.NaN;
+  return noticeRange(Number.isFinite(expires) ? expires : FAR_FUTURE_SECONDS * 1000, notice.slug);
+}
+
+/** The live long-lived notices: an ordered range read of the entries that have not expired yet. */
+function longLivedSpec(nowMs: number): PartitionSpec<NoticeEntryPayload> {
+  return {
+    store: "long",
+    hash: NOTICE_LONG_KEY,
+    legacyKey: null,
+    checkDrift: false,
+    fillMissing: false,
+    range: { start: padSeconds(nowMs / 1000), end: "99999999999999999999~" },
+    fromLegacy: () => [],
+    coerce: coerceNoticeEntry,
   };
 }
 
@@ -471,22 +518,31 @@ async function listNoticeDays(
   days: readonly string[],
   legacyDays: Set<string> | null,
   options: HistoryOptions,
+  withLongLived = false,
 ): Promise<Notice[]> {
-  const states = await readPartitions(
-    node,
-    cfg,
-    layout,
-    days.map((day) => noticeDaySpec(day, legacyDays === null || legacyDays.has(day))),
-  );
+  const specs = days.map((day) => noticeDaySpec(day, legacyDays === null || legacyDays.has(day)));
+  const states = await readPartitions<NoticeEntryPayload>(node, cfg, layout, [
+    ...specs,
+    ...(withLongLived ? [longLivedSpec(Date.now())] : []),
+  ]);
+  const longState = withLongLived ? states[states.length - 1]! : null;
+  const dayStates = withLongLived ? states.slice(0, -1) : states;
   // One slug can sit in two days (its `at` moved); keep it when any copy could match.
   const copies = new Map<string, number>();
   const wanted = new Map<string, Notice | undefined>();
-  for (const state of states) {
+  for (const state of dayStates) {
     for (const entry of state.entries) {
       copies.set(entry.id, (copies.get(entry.id) ?? 0) + 1);
       if (entryMayMatch(entry.id, entry.payload, options)) {
         wanted.set(entry.id, entry.fromLegacy ? undefined : entry.payload.notice);
       }
+    }
+  }
+  // A long-lived notice that no day above already carries.
+  for (const entry of longState?.entries ?? []) {
+    if (!wanted.has(entry.id) && entryMayMatch(entry.id, entry.payload, options)) {
+      wanted.set(entry.id, entry.payload.notice);
+      copies.set(entry.id, 1);
     }
   }
   const found = new Map<string, Notice>();
@@ -501,7 +557,12 @@ async function listNoticeDays(
     slugs: toHydrate,
     toItem: rowToNotice,
   });
-  requireAll(hydrated, toHydrate, "notice history");
+  requireAll(
+    hydrated,
+    toHydrate,
+    "notice history",
+    (slug) => `re-post it with \`situations notice --slug ${slug} --title "<title>"\`.`,
+  );
   for (const [slug, notice] of hydrated) found.set(slug, notice);
   return filterNotices([...found.values()], options).sort(compareNotices);
 }
@@ -548,14 +609,15 @@ export async function listNotices(
  *
  *   --all             every day partition
  *   --since <window>  the days that can hold a notice in the window
- *   (neither)         today and yesterday (UTC): non-expired notices, and the
- *                     default expiry is 24 h from `at`
+ *   (neither)         today and yesterday (UTC), plus the long-lived notices that
+ *                     have not expired (custom expiry over 24 h, or an `at` in
+ *                     the future: see `isLongLived`). The default expiry is 24 h
+ *                     from `at`, so every other live notice has an `at` in those
+ *                     two days.
  *
- * There is no cached "recent" row: such a row was one atom rewritten by every
- * writer, two writers lost a notice from it for good, and it had to be capped.
- * A day partition already carries the notice. Only a notice with a custom expiry
- * longer than 24 h and an `at` older than yesterday is missing from the default
- * list; `--since` and `--all` show it.
+ * There is no cached "recent" row any more: such a row was one atom rewritten by
+ * every writer, two writers lost a notice from it for good, and it had to be
+ * capped. A day partition already carries the notice.
  *
  * A node that has not loaded the entry schemas yet (before `situations init`)
  * answers from the old blobs, read only.
@@ -569,7 +631,7 @@ export async function listNoticesIndexed(
   if (!layout) return listNoticesIndexedLegacy(node, cfg, opts);
   requireIndexSchema(cfg);
   if (opts.all || opts.since) return listNoticesHistoryIndexed(node, cfg, layout, opts);
-  return listNoticeDays(node, cfg, layout, defaultListDays(Date.now()), null, opts);
+  return listNoticeDays(node, cfg, layout, defaultListDays(Date.now()), null, opts, true);
 }
 
 /** The old default read, for a node without the entry schemas: the `recent_notices` blob, read only. */
@@ -587,6 +649,29 @@ async function listNoticesIndexedLegacy(
   if (cached !== null) return legacyList(cached, RECENT_NOTICES_LEGACY_KEY).map((n) => normalizeNotice(n as NoticeInput)).sort(compareNotices);
   requireIndexSchema(cfg);
   return [];
+}
+
+/**
+ * One-time step of `situations init`: the long-lived notices still live in the
+ * legacy `recent_notices` blob (it held every non-expired notice of 14 days) get
+ * their entries. Idempotent; writes only entries of those notices.
+ */
+export async function seedLongLivedNotices(
+  node: NodeClient,
+  cfg: Config,
+  layout: Layout,
+): Promise<number> {
+  const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
+  const now = new Date();
+  const ops: BatchMutationOp[] = [];
+  for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
+    if (raw === null || typeof raw !== "object") continue;
+    const notice = normalizeNotice(raw as NoticeInput);
+    if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
+    ops.push(putOp(layout, "long", NOTICE_LONG_KEY, longRange(notice), noticeEntryPayload(notice)));
+  }
+  await commitOps(node, ops);
+  return ops.length;
 }
 
 /**
@@ -624,6 +709,13 @@ async function noticeIndexOps(
   const [inDay, inDays] = await Promise.all([dayOps(), daysOps()]);
 
   const ops = [...inDay, ...inDays];
+  // A long-lived notice (see `isLongLived`) also gets its own small entry, keyed
+  // by when it expires. Only this notice's own entries are written or deleted.
+  const newLong = isLongLived(notice, noticeCreatedMs(notice)) ? longRange(notice) : null;
+  const oldLong =
+    existing && isLongLived(existing, noticeCreatedMs(existing)) ? longRange(existing) : null;
+  if (newLong) ops.push(putOp(layout, "long", NOTICE_LONG_KEY, newLong, noticeEntryPayload(notice)));
+  if (oldLong && oldLong !== newLong) ops.push(deleteOp(layout, "long", NOTICE_LONG_KEY, oldLong));
   // An `at` that moved to another day leaves this notice's old entry behind. Only
   // this notice's own entry is deleted.
   const oldDay = existing ? noticeHistoryDay(existing.at) : null;

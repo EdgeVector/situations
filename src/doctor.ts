@@ -42,7 +42,7 @@ export async function runDoctor(node: NodeClient, cfg: Config): Promise<DoctorCh
     try {
       const { info, entries } = await loadPartition(node, cfg, layout, spec);
       const marker = info.markerComplete
-        ? `copied at ${info.migratedAt} (${info.markerIds?.size ?? 0} ids)`
+        ? `copied (blob version ${info.migratedAt}, ${info.markerIds?.size ?? 0} ids)`
         : "no complete marker";
       const legacy =
         info.legacyUpdatedAt === null

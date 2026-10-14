@@ -726,8 +726,10 @@ async function probeSituations(
     schemaHash: schemaHashFor("situation", cfg),
     fields: ["status", "expires_at"],
     slugs,
+    // The same default as the full read (`rowToSituation`): a row with no `status`
+    // is "active", so the probe and the read agree and a failure blocks.
     toItem: (row) => ({
-      status: String(row.fields.status ?? ""),
+      status: normalizeStatus(row.fields.status),
       expires_at: String(row.fields.expires_at ?? ""),
     }),
   });

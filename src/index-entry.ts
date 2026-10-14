@@ -187,18 +187,27 @@ const layoutMemo = new WeakMap<object, Promise<LayoutInfo>>();
  * The entry layout, or null when the node does not have both schemas, and
  * whether the node reports the legacy `Index` schema as loaded.
  *
- * A config pin wins. With no pin the node's loaded schemas are used
- * (`GET /api/schemas`), so a config that cannot be written (a read-only home)
- * still reaches the entries: a writer that landed an entry must not leave a
- * reader looking at the frozen legacy blob. Never declares.
+ * A config pin wins, and with BOTH pins set the node is not asked at all. With a
+ * pin missing the node's loaded schemas are used (`GET /api/schemas`, one call
+ * per run), so a config that cannot be written (a read-only home) still reaches
+ * the entries: a writer that landed an entry must not leave a reader looking at
+ * the frozen legacy blob. Never declares.
  */
 export function resolveLayoutInfo(node: NodeClient, cfg: Config): Promise<LayoutInfo> {
   let pending = layoutMemo.get(cfg);
   if (!pending) {
     pending = (async () => {
-      const loaded = await resolveLoadedLayoutHashes(node);
       const pinnedEntry = cfg.schemaHashes[STORES.entry.configKey];
       const pinnedNotice = cfg.schemaHashes[STORES.notice.configKey];
+      // Both pins set: no schema-list call. `GET /api/schemas` lists every schema
+      // the node has (over a thousand, about 600 KB on the primary), and a
+      // preflight runs before every automation action, so a pinned config must
+      // not pay for it (and must not fail closed because a slow node was slow to
+      // list them). `indexLoaded` only matters when there is no layout.
+      if (pinnedEntry && pinnedNotice) {
+        return { layout: { entry: pinnedEntry, notice: pinnedNotice }, indexLoaded: true };
+      }
+      const loaded = await resolveLoadedLayoutHashes(node);
       const entry = pinnedEntry || loaded.index_entry;
       const notice = pinnedNotice || loaded.notice_history;
       return {
@@ -641,8 +650,9 @@ export async function loadPartition<T>(
 ): Promise<PartitionState<T>> {
   let { stored, marker, present, missingListed } = await readStored(node, layout, spec);
   // A marker id with no entry cannot say "resolved" from "not synced" from "a
-  // page the node nulled". Ask a second time before it is believed.
-  if (missingListed.length > 0) {
+  // page the node nulled", and a marker with only some of its chunks may be a
+  // page the node nulled too. Ask a second time before either is believed.
+  if (missingListed.length > 0 || (!marker.complete && marker.ranges.length > 0)) {
     ({ stored, marker, present, missingListed } = await readStored(node, layout, spec));
   }
 
@@ -737,7 +747,10 @@ export async function loadPartition<T>(
         spec.store,
         spec.hash,
         drafts.map((draft) => draft.id),
-        new Date().toISOString(),
+        // The blob version that was READ, not the local clock: an older binary that
+        // writes after this read (or a skewed clock) still leaves the blob newer than
+        // the marker, so drift is never hidden.
+        legacy.updated_at || new Date().toISOString(),
         marker.ranges,
       ),
     );
@@ -804,7 +817,8 @@ export async function migrationOpsForWrite<T>(
  * entry): without this every later read would find a listed id with no entry and
  * read the legacy blob for it. The marker is not an input to liveness, so a lost
  * race (two writers rewrite one chunk) only costs a re-read, never a wrong answer.
- * `migrated_at` is kept. One point-read, no ops when the id is not listed.
+ * `migrated_at` (the blob version that was copied) is kept. One point-read, no
+ * ops when the id is not listed.
  */
 export async function trimMarkerOps<T>(
   node: NodeClient,

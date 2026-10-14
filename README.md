@@ -382,8 +382,10 @@ written before a policy exists will never expire.
 
 A reader or writer that finds a partition not yet copied reads that partition's
 legacy blob and copies its entries in with ONE batch that ends with marker
-records `__migrated__.<k>`: `{ migrated_at, chunk, of, ids }`, the time of the
-copy and the ids (slugs or days) it contained. Rules:
+records `__migrated__.<k>`: `{ migrated_at, chunk, of, ids }`: the `updated_at`
+of the blob that was read (not the local clock, so a later write by an older
+binary is always newer, and clock skew cannot hide it) and the ids (slugs or days)
+it contained. Rules:
 
 1. A marker is written only after a legacy row with at least one entry was
    really copied. A partition with no legacy row is never marked, because a
@@ -411,6 +413,14 @@ copy and the ids (slugs or days) it contained. Rules:
 5. The legacy rows stay on the node for ever.
 
 #### Upgrade and rollout
+
+CAUTION: the host-track entry for `situations` (last-stack,
+`config/host-track/apps.json`) has `soak_hours: 1` and probes `--help` and `list`.
+A new build goes live after the soak, and both probes pass on a node that has not
+run `situations init`; but `put` and `notice` fail until `situations init` has run.
+So the last-stack host-track change below (a `post_install` that runs
+`situations init`, and a `doctor` probe) must land BEFORE this change is
+installed. It is not part of this repo.
 
 Required order (the schemas must be declared while the old binary is current,
 because a `put` or `notice` never declares and fails until they are):

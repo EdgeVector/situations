@@ -271,9 +271,10 @@ export const NOTICE_HISTORY_MARKER = "situations_notice_history_v1";
 export const INDEX_ENTRY_MAX_BYTES = 4 * 1024;
 /**
  * A migration marker is one or more records, entry keys `__migrated__.0`,
- * `__migrated__.1`, ... Each carries `{ migrated_at, chunk, of, ids }`: when the
- * legacy blob was copied, which chunk this is of how many, and the ids (slugs or
- * days) the copy contained. A slug is `[a-z0-9][a-z0-9_-]*` and a day is
+ * `__migrated__.1`, ... Each carries `{ migrated_at, chunk, of, ids }`: the
+ * `updated_at` of the legacy blob that was copied (the blob version READ, not the
+ * local clock, so a later write by an older binary is always newer), which chunk
+ * this is of how many, and the ids (slugs or days) the copy contained. A slug is `[a-z0-9][a-z0-9_-]*` and a day is
  * `YYYY-MM-DD`, so neither collides with the prefix.
  *
  * A reader trusts a marker only for the ids it lists, and only when every chunk

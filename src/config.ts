@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -86,7 +86,11 @@ export function readConfig(path: string = defaultConfigPath()): Config {
 
 export function writeConfig(config: Config, path: string = defaultConfigPath()): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
+  // Write a sibling temp file, then rename: another situations process reading
+  // this config at the same moment sees the old file or the new one, never half.
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
 }
 
 export function schemaHashFor(type: RecordType, cfg: { schemaHashes: Record<string, string> }): string {

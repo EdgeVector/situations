@@ -1,7 +1,39 @@
-import { FsituationsError, type NodeClient, type QueryRow } from "./client.ts";
+import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
-import { fieldsFor, SEVERITY_VALUES, STATUS_VALUES, type Severity, type SituationStatus } from "./schemas.ts";
-import { hasIndexSchema, readIndexPayload, requireIndexSchema, writeIndexPayload } from "./index-cache.ts";
+import {
+  fieldsFor,
+  INDEX_ENTRY_MAX_BYTES,
+  SEVERITY_VALUES,
+  STATUS_VALUES,
+  type Severity,
+  type SituationStatus,
+} from "./schemas.ts";
+import { atomBytes } from "./atom-size.ts";
+import { hasIndexSchema, readIndexPayload, readLegacyRow, requireIndexSchema } from "./index-cache.ts";
+import {
+  commitOps,
+  dayOf,
+  daysPartition,
+  deleteOp,
+  entryExists,
+  hydrateBySlug,
+  legacyList,
+  mapLimit,
+  migrationOpsForWrite,
+  normalizeHistoryDays,
+  putOp,
+  readPartitions,
+  requireAll,
+  requireLayout,
+  trimMarkerOps,
+  resolveLayout,
+  resolveLayoutInfo,
+  unreadable,
+  warn,
+  type Entry,
+  type Layout,
+  type PartitionSpec,
+} from "./index-entry.ts";
 
 const ACTIVE_SITUATIONS_INDEX_KEY = "active_situations";
 const SITUATION_HISTORY_DAYS_INDEX_KEY = "situation_history_days";
@@ -529,45 +561,204 @@ export async function requireSituation(
 }
 
 function situationHistoryDay(createdAt: string): string | null {
-  const created = Date.parse(createdAt);
-  if (!Number.isFinite(created)) return null;
-  return new Date(created).toISOString().slice(0, 10);
+  return dayOf(createdAt);
 }
 
 function situationHistoryDayKey(day: string): string {
   return `${SITUATION_HISTORY_DAY_PREFIX}${day}`;
 }
 
-function normalizeHistoryDays(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const item of value) {
-    const day = String(item ?? "").trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || seen.has(day)) continue;
-    seen.add(day);
-    out.push(day);
-  }
-  return out.sort((a, b) => b.localeCompare(a));
+/**
+ * What an index entry holds of one situation.
+ *
+ * The day entry (`DayEntryPayload`) names a situation and nothing else: a full
+ * history read is rare, and it hydrates each record from the Situation schema.
+ *
+ * The active-set entry (`ActiveEntryPayload`) is read by every preflight. It
+ * holds the fields that decide whether the situation is still active, plus the
+ * whole situation (`situation`) whenever the entry stays inside the 4 KiB entry
+ * budget. One situation is 21 fields = 21 atoms the node must load (and keep in
+ * its warm set) per preflight against ONE for the entry; a typical situation is
+ * under 1 KiB. A situation that does not fit (a long `phases_json`) keeps only
+ * the deciding fields and is hydrated from its record by slug. The record write
+ * and the entry write are one batch, so the copy cannot lag the record.
+ */
+type DayEntryPayload = { created_at: string };
+export type ActiveEntryPayload = {
+  status: string;
+  severity: Severity;
+  updated_at: string;
+  expires_at: string;
+  situation?: Situation;
+  /**
+   * `legacy`: written by a migration or a drift repair from an old blob. UNTRUSTED:
+   * a stale process can write it with a later write time than a newer entry, so a
+   * reader decides liveness from the RECORD, never from this entry.
+   */
+  src?: "legacy";
+};
+
+function activeEntryPayload(situation: Situation): ActiveEntryPayload {
+  const entry: ActiveEntryPayload = {
+    status: situation.status,
+    severity: situation.severity,
+    updated_at: situation.updated_at,
+    expires_at: situation.expires_at,
+  };
+  const withSituation = { ...entry, situation };
+  return atomBytes(JSON.stringify(withSituation)) <= INDEX_ENTRY_MAX_BYTES ? withSituation : entry;
 }
 
-/** Full history through bounded, keyed day buckets — never a Situation scan. */
-export async function listSituations(node: NodeClient, cfg: Config): Promise<Situation[]> {
-  requireIndexSchema(cfg);
+function objectOf(stored: unknown, where: string): Record<string, unknown> {
+  if (stored !== null && typeof stored === "object" && !Array.isArray(stored)) {
+    return stored as Record<string, unknown>;
+  }
+  throw unreadable(where, "its payload is not an object");
+}
+
+/** A legacy blob item as a situation. An item that is not one THROWS: it is a hold nobody can read. */
+function legacySituation(raw: unknown, key: string): Situation {
+  if (raw === null || typeof raw !== "object") {
+    throw unreadable(`legacy Index row "${key}"`, "an item is not a situation");
+  }
+  return normalizeSituation(raw as SituationInput, undefined, { touchUpdatedAt: false });
+}
+
+function daySpec(day: string, legacyKnown = true): PartitionSpec<DayEntryPayload> {
+  const key = situationHistoryDayKey(day);
+  return {
+    store: "entry",
+    hash: key,
+    legacyKey: legacyKnown ? key : null,
+    checkDrift: false,
+    fillMissing: true,
+    fromLegacy: (legacy) =>
+      legacyList(legacy, key).map((raw) => {
+        const situation = legacySituation(raw, key);
+        return { id: situation.slug, range: situation.slug, payload: { created_at: situation.created_at } };
+      }),
+    coerce: (stored, id) => ({
+      created_at: String(objectOf(stored, `${key}/${id}`).created_at ?? ""),
+    }),
+  };
+}
+
+export const SITUATION_DAYS_SPEC = daysPartition(SITUATION_HISTORY_DAYS_INDEX_KEY);
+
+export const ACTIVE_SPEC: PartitionSpec<ActiveEntryPayload> = {
+  store: "entry",
+  hash: ACTIVE_SITUATIONS_INDEX_KEY,
+  legacyKey: ACTIVE_SITUATIONS_INDEX_KEY,
+  checkDrift: true,
+  fillMissing: true,
+  fromLegacy: (legacy) =>
+    legacyList(legacy, ACTIVE_SITUATIONS_INDEX_KEY).map((raw) => {
+      const situation = legacySituation(raw, ACTIVE_SITUATIONS_INDEX_KEY);
+      return { id: situation.slug, range: situation.slug, payload: activeEntryPayload(situation) };
+    }),
+  // An entry with no readable `status` THROWS: it is a hold this gate cannot read.
+  coerce(stored, id) {
+    const where = `${ACTIVE_SITUATIONS_INDEX_KEY}/${id}`;
+    const o = objectOf(stored, where);
+    if (typeof o.status !== "string") throw unreadable(where, "it has no `status`");
+    let situation: Situation | undefined;
+    if (o.situation !== null && typeof o.situation === "object") {
+      try {
+        situation = normalizeSituation(o.situation as SituationInput, undefined, {
+          touchUpdatedAt: false,
+        });
+      } catch {
+        // An unreadable COPY is not used; the record is read instead.
+      }
+    }
+    return {
+      status: o.status,
+      severity: normalizeSeverity(o.severity),
+      updated_at: String(o.updated_at ?? ""),
+      expires_at: String(o.expires_at ?? ""),
+      ...(situation ? { situation } : {}),
+      ...(o.src === "legacy" ? { src: "legacy" as const } : {}),
+    };
+  },
+  // A snapshot from an old blob is stored without its copy of the record and flagged.
+  untrusted: ({ situation: _copy, ...rest }) => ({ ...rest, src: "legacy" as const }),
+  version: (payload) => payload.updated_at,
+  isUntrusted: (payload) => payload.src === "legacy",
+};
+
+/** Could an active-set entry still be active at `at`? Same rule as `activeSituations`. */
+function activeEntryLive(slug: string, entry: ActiveEntryPayload, at: Date): boolean {
+  const probe = { slug, status: entry.status, expires_at: entry.expires_at } as unknown as Situation;
+  return activeSituations([probe], at).length > 0;
+}
+
+/** The exact command that removes an entry that points at no record (a resolved situation has no active entry). */
+function danglingFix(slug: string): string {
+  return (
+    `echo '{"slug":"${slug}","title":"${slug}","status":"resolved"}' | situations put - ` +
+    "(it writes the record as resolved and deletes the entry)."
+  );
+}
+
+/** Full records by slug. A slug with no record is absent from the map; the caller decides what that means. */
+async function hydrateSituations(
+  node: NodeClient,
+  cfg: Config,
+  slugs: readonly string[],
+): Promise<Map<string, Situation>> {
+  return hydrateBySlug(node, {
+    schemaHash: schemaHashFor("situation", cfg),
+    fields: fieldsFor("situation"),
+    slugs,
+    toItem: rowToSituation,
+  });
+}
+
+/** Only what decides liveness: `status` and `expires_at` (2 atoms, not 21). */
+type LiveProbe = { status: string; expires_at: string };
+
+async function probeSituations(
+  node: NodeClient,
+  cfg: Config,
+  slugs: readonly string[],
+): Promise<Map<string, LiveProbe>> {
+  return hydrateBySlug(node, {
+    schemaHash: schemaHashFor("situation", cfg),
+    fields: ["status", "expires_at"],
+    slugs,
+    // The same default as the full read (`rowToSituation`): a row with no `status`
+    // is "active", so the probe and the read agree and a failure blocks.
+    toItem: (row) => ({
+      status: normalizeStatus(row.fields.status),
+      expires_at: String(row.fields.expires_at ?? ""),
+    }),
+  });
+}
+
+function probeIsLive(slug: string, probe: LiveProbe, at: Date): boolean {
+  return activeSituations([{ slug, ...probe } as unknown as Situation], at).length > 0;
+}
+
+/** The pre-entry full-history read, for a node that has not loaded the entry schemas yet. */
+async function listSituationsLegacy(node: NodeClient, cfg: Config): Promise<Situation[]> {
   const days = normalizeHistoryDays(
-    await readIndexPayload<unknown>(node, cfg, SITUATION_HISTORY_DAYS_INDEX_KEY),
+    legacyList(
+      await readIndexPayload<unknown>(node, cfg, SITUATION_HISTORY_DAYS_INDEX_KEY),
+      SITUATION_HISTORY_DAYS_INDEX_KEY,
+    ),
   );
   const bySlug = new Map<string, Situation>();
   const active = await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY);
-  for (const raw of active ?? []) {
-    const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });
+  for (const raw of legacyList(active, ACTIVE_SITUATIONS_INDEX_KEY)) {
+    const situation = legacySituation(raw, ACTIVE_SITUATIONS_INDEX_KEY);
     bySlug.set(situation.slug, situation);
   }
-  for (const day of days) {
-    const bucket = await readIndexPayload<Situation[]>(node, cfg, situationHistoryDayKey(day));
-    if (!bucket) continue;
-    for (const raw of bucket) {
-      const situation = normalizeSituation(raw, undefined, { touchUpdatedAt: false });
+  const buckets = await mapLimit(days, 4, (day) =>
+    readIndexPayload<Situation[]>(node, cfg, situationHistoryDayKey(day)),
+  );
+  for (const bucket of buckets) {
+    for (const raw of legacyList(bucket, "situation_history_day")) {
+      const situation = legacySituation(raw, "situation_history_day");
       const existing = bySlug.get(situation.slug);
       if (!existing || situation.updated_at.localeCompare(existing.updated_at) >= 0) {
         bySlug.set(situation.slug, situation);
@@ -578,63 +769,199 @@ export async function listSituations(node: NodeClient, cfg: Config): Promise<Sit
 }
 
 /**
- * Cheap default read for preflight and `list`/`notices`: point-reads the
- * `active_situations` index row instead of scanning every Situation ever
- * filed. A declared-but-empty index is a valid fresh-node state and returns an
- * empty list; `--all` reads the keyed day-bucket history index.
+ * Full history through the keyed day partitions, never a Situation scan. The
+ * partitions name the situations; each situation is read from its own record
+ * (one multi-get), so the answer is the record, not a copy that could be stale.
+ * An entry that points at no record THROWS.
+ */
+export async function listSituations(node: NodeClient, cfg: Config): Promise<Situation[]> {
+  requireIndexSchema(cfg);
+  const layout = await resolveLayout(node, cfg);
+  if (!layout) return listSituationsLegacy(node, cfg);
+
+  const [daysState] = await readPartitions(node, cfg, layout, [SITUATION_DAYS_SPEC]);
+  const days = normalizeHistoryDays(daysState!.entries.map((entry) => entry.id));
+  const legacyDays = daysState!.info.markerIds;
+  const partitions = await readPartitions<unknown>(node, cfg, layout, [
+    ACTIVE_SPEC,
+    ...days.map((day) => daySpec(day, legacyDays === null || legacyDays.has(day))),
+  ]);
+  // A stored entry with no record THROWS; an id only a marker or a blob lists
+  // (resolved, expired, never synced) with no record is gone.
+  const strict = new Set<string>();
+  const slugs = new Set<string>();
+  for (const state of partitions) {
+    for (const entry of state.entries) {
+      slugs.add(entry.id);
+      if (!entry.fromLegacy) strict.add(entry.id);
+    }
+  }
+  const hydrated = await hydrateSituations(node, cfg, [...slugs]);
+  requireAll(hydrated, [...strict], "situation", danglingFix);
+  return [...hydrated.values()].sort(compareSituations);
+}
+
+/** An entry whose liveness is decided from the RECORD: a snapshot from an old blob, or one the blob has a newer version of. */
+function isUntrusted(entry: Entry<ActiveEntryPayload>): boolean {
+  return Boolean(entry.fromLegacy || entry.decideFromRecord || entry.payload.src === "legacy");
+}
+
+/**
+ * The pre-entry read, for a node that has not loaded the entry schemas yet. It
+ * reads the legacy blob twice before it believes "no row", and it FAILS CLOSED:
+ * if the node does not report the legacy Index schema as loaded, or the query
+ * fails, the answer is an error (preflight exits 3), never an empty list. A node
+ * with the schema loaded and no row is a valid empty answer.
+ */
+async function listActiveLegacy(
+  node: NodeClient,
+  cfg: Config,
+  indexLoaded: boolean,
+  at: Date,
+): Promise<Situation[]> {
+  if (!hasIndexSchema(cfg) || !indexLoaded) {
+    throw new FsituationsError({
+      code: "index_schema_not_loaded",
+      message:
+        "The node has not loaded the situations Index schema, so the active situations cannot be read: run `situations init`.",
+      hint: "Fail closed: an empty answer here would let preflight say OK without having looked.",
+    });
+  }
+  const row = await readLegacyRow(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, { confirmAbsent: true });
+  if (!row) return [];
+  const restored = legacyList(row.payload, ACTIVE_SITUATIONS_INDEX_KEY).map((raw) =>
+    legacySituation(raw, ACTIVE_SITUATIONS_INDEX_KEY),
+  );
+  return activeSituations(restored, at).sort(compareSituations);
+}
+
+/**
+ * Cheap default read for preflight and `list`/`notices`: one range query on the
+ * `active_situations` partition (a handful of small entries), and a multi-get of
+ * only the situations whose entry does not carry them. It never reads every
+ * Situation ever filed. A declared-but-empty index is a valid fresh-node state
+ * and returns an empty list; `--all` reads the keyed day partitions.
+ *
+ * Liveness comes from the entry only for a TRUSTED entry (written by `put`, in
+ * the same batch as its record). An UNTRUSTED entry (a snapshot copied from an old
+ * blob) is decided from the RECORD: its `status` and `expires_at` are probed (2
+ * atoms), and only a live one is read in full. So a stale copy with an old expiry
+ * can never drop a situation whose record is still active, and a resolved one
+ * never blocks.
+ *
+ * Preflight is the fleet's gate and fails closed: an entry that cannot be read,
+ * or that points at no record, THROWS (the CLI answers exit 3) instead of being
+ * skipped.
  */
 export async function listActiveSituationsIndexed(
   node: NodeClient,
   cfg: Config,
   at: Date = new Date(),
 ): Promise<Situation[]> {
-  const cached = await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY);
-  if (cached !== null) {
-    const restored = cached.map((s) => normalizeSituation(s, undefined, { touchUpdatedAt: false }));
-    return activeSituations(restored, at).sort(compareSituations);
-  }
+  const info = await resolveLayoutInfo(node, cfg);
+  if (!info.layout) return listActiveLegacy(node, cfg, info.indexLoaded, at);
   requireIndexSchema(cfg);
-  return [];
-}
-
-async function patchSituationsHistoryIndex(
-  node: NodeClient,
-  cfg: Config,
-  situation: Situation,
-): Promise<void> {
-  if (!hasIndexSchema(cfg)) return;
-  const day = situationHistoryDay(situation.created_at);
-  if (!day) return;
-  const days = normalizeHistoryDays(
-    (await readIndexPayload<unknown>(node, cfg, SITUATION_HISTORY_DAYS_INDEX_KEY)) ?? [],
-  );
-  if (!days.includes(day)) {
-    await writeIndexPayload(
-      node,
-      cfg,
-      SITUATION_HISTORY_DAYS_INDEX_KEY,
-      [day, ...days].sort((a, b) => b.localeCompare(a)),
+  const [state] = await readPartitions(node, cfg, info.layout, [ACTIVE_SPEC]);
+  const { entries, info: partition } = state!;
+  if (partition.drift) {
+    warn(
+      `legacy Index row "${ACTIVE_SITUATIONS_INDEX_KEY}" changed after it was copied (${partition.legacyUpdatedAt} is newer than ` +
+        `${partition.migratedAt}): an older situations binary wrote it. Its entries are read from their records. ` +
+        (partition.contested.length > 0
+          ? `Entries the blob has newer versions of (${partition.contested.join(", ")}) stay decided from the record until each is put again. `
+          : "") +
+        "Run one situations binary (`command -v situations`) and `situations doctor`.",
     );
   }
-  const bucketKey = situationHistoryDayKey(day);
-  const bucket = (await readIndexPayload<Situation[]>(node, cfg, bucketKey)) ?? [];
-  const withoutSlug = bucket.filter((item) => item.slug !== situation.slug);
-  await writeIndexPayload(node, cfg, bucketKey, [...withoutSlug, situation].sort(compareSituations));
+
+  const trusted = entries.filter((entry) => !isUntrusted(entry));
+  const untrusted = entries.filter(isUntrusted);
+  const liveTrusted = trusted.filter((entry) => activeEntryLive(entry.id, entry.payload, at));
+
+  // Stage 1: an untrusted entry is probed from its record.
+  const probes = await probeSituations(node, cfg, untrusted.map((entry) => entry.id));
+  // A STORED untrusted entry with no record is dangling (throw); an id only a
+  // marker or a blob listed, with no record, is gone.
+  requireAll(probes, untrusted.filter((entry) => !entry.fromLegacy).map((entry) => entry.id), "situation", danglingFix);
+  const liveUntrusted = untrusted.filter((entry) => {
+    const probe = probes.get(entry.id);
+    return probe !== undefined && probeIsLive(entry.id, probe, at);
+  });
+
+  // Stage 2: full records for what is live and not carried by its own entry.
+  const needFull = [
+    ...liveUntrusted.map((entry) => entry.id),
+    ...liveTrusted.filter((entry) => !entry.payload.situation).map((entry) => entry.id),
+  ];
+  const hydrated = await hydrateSituations(node, cfg, needFull);
+  requireAll(hydrated, needFull, "situation", danglingFix);
+
+  const found: Situation[] = [
+    ...liveTrusted.map((entry) => entry.payload.situation ?? hydrated.get(entry.id)!),
+    ...liveUntrusted.map((entry) => hydrated.get(entry.id)!),
+  ];
+  return activeSituations(found, at).sort(compareSituations);
 }
 
-async function patchSituationsIndex(
+/**
+ * Every index write one situation upsert makes, as ops for the SAME batch as
+ * the Situation record write (record and entries commit together: a situation
+ * that lands but is missing from the active set would answer a preflight OK).
+ *
+ * It writes only the entries of THIS situation. Another device may have
+ * extended or changed any other situation since this process last read it, and a
+ * delete from a stale reader has the later write time and wins: so no other
+ * entry is read for pruning, rewritten or deleted. A reader drops an entry that
+ * has expired by its own clock.
+ *
+ * Reads first; nothing is written here.
+ */
+async function situationIndexOps(
   node: NodeClient,
   cfg: Config,
+  layout: Layout,
   situation: Situation,
-): Promise<void> {
-  const cached = (await readIndexPayload<Situation[]>(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY)) ?? [];
-  const withoutSlug = cached.filter((s) => s.slug !== situation.slug);
-  const isNowActive = activeSituations([situation]).length > 0;
-  const next = isNowActive ? [...withoutSlug, situation] : withoutSlug;
-  // Opportunistically drop any other entries that have since expired by clock
-  // alone (no explicit upsert needed to notice that).
-  await writeIndexPayload(node, cfg, ACTIVE_SITUATIONS_INDEX_KEY, activeSituations(next));
-  await patchSituationsHistoryIndex(node, cfg, situation);
+): Promise<BatchMutationOp[]> {
+  const day = situationHistoryDay(situation.created_at);
+
+  const activeOps = async (): Promise<BatchMutationOp[]> => {
+    const migration = await migrationOpsForWrite(node, cfg, layout, ACTIVE_SPEC);
+    const ops = [...migration];
+    if (activeSituations([situation]).length > 0) {
+      ops.push(
+        putOp(layout, "entry", ACTIVE_SITUATIONS_INDEX_KEY, situation.slug, activeEntryPayload(situation)),
+      );
+    } else {
+      ops.push(deleteOp(layout, "entry", ACTIVE_SITUATIONS_INDEX_KEY, situation.slug));
+      // It no longer has an entry, so the marker stops listing it (a copy in `ops`
+      // already rewrote the marker: leave that one alone).
+      if (migration.length === 0) {
+        ops.push(...(await trimMarkerOps(node, layout, ACTIVE_SPEC, situation.slug)));
+      }
+    }
+    return ops;
+  };
+  const dayOps = async (): Promise<BatchMutationOp[]> => {
+    if (!day) return [];
+    // Every upsert (not only the first) lists the situation under its creation
+    // day: a situation filed before history existed is listed by its next update.
+    return [
+      ...(await migrationOpsForWrite(node, cfg, layout, daySpec(day))),
+      putOp(layout, "entry", situationHistoryDayKey(day), situation.slug, {
+        created_at: situation.created_at,
+      }),
+    ];
+  };
+  const daysOps = async (): Promise<BatchMutationOp[]> => {
+    if (!day) return [];
+    if (await entryExists(node, layout, "entry", SITUATION_HISTORY_DAYS_INDEX_KEY, day)) return [];
+    return [
+      ...(await migrationOpsForWrite(node, cfg, layout, SITUATION_DAYS_SPEC)),
+      putOp(layout, "entry", SITUATION_HISTORY_DAYS_INDEX_KEY, day, ""),
+    ];
+  };
+  const [active, inDay, inDays] = await Promise.all([activeOps(), dayOps(), daysOps()]);
+  return [...active, ...inDay, ...inDays];
 }
 
 export async function upsertSituation(
@@ -643,6 +970,8 @@ export async function upsertSituation(
   input: SituationInput,
   opts: { allowProseOnly?: boolean } = {},
 ): Promise<{ situation: Situation; action: "created" | "updated" }> {
+  // A write that cannot be indexed fails before it writes anything.
+  const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
   const existing = await fetchSituationRaw(node, cfg, input.slug);
   const situation = normalizeSituation(input, existing ?? undefined);
   rejectConflictingActionLists(situation);
@@ -650,16 +979,19 @@ export async function upsertSituation(
   // drops blocked_actions while leaving the forbidding prose in place never
   // mentions the prose at all. The record that lands is the one to judge.
   rejectProseOnlyPolicy(situation as unknown as Record<string, unknown>, opts);
-  const fields = situationToFields(situation);
-  const hash = schemaHashFor("situation", cfg);
-  if (existing) {
-    await node.updateRecord({ schemaHash: hash, fields, keyHash: situation.slug });
-    await patchSituationsIndex(node, cfg, situation);
-    return { situation, action: "updated" };
-  }
-  await node.createRecord({ schemaHash: hash, fields, keyHash: situation.slug });
-  await patchSituationsIndex(node, cfg, situation);
-  return { situation, action: "created" };
+  // The Situation record and its index entries are ONE batch: all commit or none
+  // do. `update` is an upsert, so create and update are the same write.
+  const ops: BatchMutationOp[] = [
+    {
+      mutationType: "update",
+      schemaHash: schemaHashFor("situation", cfg),
+      keyHash: situation.slug,
+      fields: situationToFields(situation),
+    },
+    ...(layout ? await situationIndexOps(node, cfg, layout, situation) : []),
+  ];
+  await commitOps(node, ops);
+  return { situation, action: existing ? "updated" : "created" };
 }
 
 export function activeSituations(situations: Situation[], at: Date = new Date()): Situation[] {

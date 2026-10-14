@@ -69,7 +69,23 @@ export type QueryResponse = {
   returned_count?: number;
 };
 
-export type QueryFilter = Record<string, string>;
+// Range-filter object forwarded verbatim to `/api/query`: `{ HashKey: "k" }`,
+// `{ HashRangeKey: { hash, range } }`, `{ HashRangeKeys: [[hash, range], ...] }`.
+export type QueryFilter = Record<string, unknown>;
+
+/**
+ * One write of a batch. `update` is an upsert (the node writes the key whether
+ * or not it exists; `must_exist` is opt-in and not used here), so callers never
+ * read a key just to choose between create and update. `keyRange` addresses one
+ * row of a HashRange schema; omit it for a Hash schema.
+ */
+export type BatchMutationOp = {
+  mutationType: "update" | "delete";
+  schemaHash: string;
+  keyHash: string;
+  keyRange?: string;
+  fields: Record<string, unknown>;
+};
 
 type LoadedSchema = {
   name: string;
@@ -109,16 +125,25 @@ export type NodeClient = {
     schemaHash: string;
     fields: Record<string, unknown>;
     keyHash: string;
+    keyRange?: string;
   }): Promise<void>;
   updateRecord(opts: {
     schemaHash: string;
     fields: Record<string, unknown>;
     keyHash: string;
+    keyRange?: string;
   }): Promise<void>;
+  /**
+   * `POST /api/mutations/batch`: every op commits in ONE request (one resident
+   * commit, one revision). Callers chunk with `commitOps` in index-entry.ts.
+   */
+  mutateBatch(ops: BatchMutationOp[]): Promise<void>;
   queryAll(opts: {
     schemaHash: string;
     fields: string[];
     filter?: QueryFilter;
+    /** Rows per page of the auto-paginating drain (1..1000, default 100). */
+    pageSize?: number;
   }): Promise<QueryResponse>;
 };
 
@@ -221,13 +246,14 @@ export function newNodeClient(opts: {
     schemaHash: string,
     fields: Record<string, unknown>,
     keyHash: string,
+    keyRange?: string,
   ): Promise<void> {
     verbose(`→ NODE POST /api/mutation (sdk) schema=${schemaHash} type=${mutationType}`);
     try {
       await client().mutate(schemaHash, {
         mutationType,
         fields: fields as Record<string, SdkJsonValue>,
-        key: { hash: keyHash, range: null },
+        key: { hash: keyHash, range: keyRange ?? null },
       });
       verbose(`← NODE POST /api/mutation status=200`);
     } catch (err) {
@@ -302,13 +328,29 @@ export function newNodeClient(opts: {
         decision: typeof b.decision === "string" ? b.decision : undefined,
       };
     },
-    async createRecord({ schemaHash, fields, keyHash }) {
-      await mutate("create", schemaHash, fields, keyHash);
+    async createRecord({ schemaHash, fields, keyHash, keyRange }) {
+      await mutate("create", schemaHash, fields, keyHash, keyRange);
     },
-    async updateRecord({ schemaHash, fields, keyHash }) {
-      await mutate("update", schemaHash, fields, keyHash);
+    async updateRecord({ schemaHash, fields, keyHash, keyRange }) {
+      await mutate("update", schemaHash, fields, keyHash, keyRange);
     },
-    async queryAll({ schemaHash, fields, filter }) {
+    async mutateBatch(ops) {
+      if (ops.length === 0) return;
+      verbose(`→ NODE POST /api/mutations/batch count=${ops.length}`);
+      const { status, body } = await callJson("POST", "/api/mutations/batch", {
+        mutations: ops.map((op) => ({
+          type: "mutation",
+          schema: op.schemaHash,
+          fields_and_values: op.fields,
+          key_value: { hash: op.keyHash, range: op.keyRange ?? null },
+          mutation_type: op.mutationType,
+        })),
+        convergence: "async",
+      });
+      verbose(`← NODE POST /api/mutations/batch status=${status}`);
+      if (status !== 200) throw mapNodeError(status, body, "/api/mutations/batch");
+    },
+    async queryAll({ schemaHash, fields, filter, pageSize }) {
       // The SDK drains the node's `/api/query` pagination for us (the node caps
       // each page at DEFAULT_QUERY_LIMIT=100, so a plain query would silently
       // truncate a >100-row schema). `filter` is fsituations' optional range
@@ -320,7 +362,10 @@ export function newNodeClient(opts: {
       };
       let result;
       try {
-        result = await client().queryAll(schemaHash, sdkFilter, { maxRows: QUERY_MAX_ROWS });
+        result = await client().queryAll(schemaHash, sdkFilter, {
+          maxRows: QUERY_MAX_ROWS,
+          ...(pageSize !== undefined ? { pageSize } : {}),
+        });
       } catch (err) {
         throw mapSdkDataError(err, baseUrl, socketPath, "/api/query");
       }

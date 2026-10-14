@@ -20,7 +20,7 @@ import {
 } from "./notice.ts";
 import {
   activeSituations,
-  listSituations,
+  listActiveSituationsIndexed,
   type Situation,
 } from "./record.ts";
 import { OWNER_APP_ID, type FieldType } from "./schemas.ts";
@@ -228,10 +228,15 @@ export async function publishPostureStatus(
         hint: "Run `situations init`, or pass a node+cfg for tests.",
       });
     }
-    situations = situations ?? (await listSituations(node, cfg));
+    // The publication keeps only active situations and the notices of one
+    // window, so read exactly those: the active set, and the day partitions
+    // that can hold a notice inside the window. Neither read walks full history.
+    situations = situations ?? (await listActiveSituationsIndexed(node, cfg, now));
     notices =
       notices ??
-      (hasNoticeSchema(cfg) ? await listNotices(node, cfg) : []);
+      (hasNoticeSchema(cfg)
+        ? await listNotices(node, cfg, { since: options.noticeSince ?? "24h" })
+        : []);
   }
 
   const publication = buildPosturePublication({

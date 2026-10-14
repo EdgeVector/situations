@@ -44,6 +44,7 @@ import {
   renderNotice,
   renderNoticesList,
   requireNotice,
+  seedLongLivedNotices,
   upsertNotice,
   type NoticeInput,
 } from "./notice.ts";
@@ -53,9 +54,19 @@ import {
   publishPostureStatus,
   type DeliveryRecipient,
 } from "./publish-status.ts";
-import { indexSchema, noticeSchema, situationSchema } from "./schemas.ts";
+import { runDoctor } from "./doctor.ts";
+import {
+  indexEntrySchema,
+  indexSchema,
+  noticeHistorySchema,
+  noticeSchema,
+  situationSchema,
+} from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
+
+// The default `situations notices` list shows the newest this many.
+const DEFAULT_NOTICE_LIMIT = 50;
 
 export const TOP_HELP = `situations — current operational posture + agent-impact notices over LastDB
 
@@ -63,8 +74,9 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json (declares Situation + Notice + Index schemas on Mini)
-  schema               print Situation, Notice, and/or Index schema JSON
+  init                 write ~/.situations/config.json (declares Situation + Notice + Index + IndexEntry + NoticeHistory schemas on Mini)
+  schema               print Situation, Notice, Index, IndexEntry, and/or NoticeHistory schema JSON
+  doctor               check the index layout: schemas, legacy copy, drift, unreadable entries (read only)
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
   show <slug>          show one situation (--json, --field)
@@ -227,14 +239,28 @@ Options:
   --json
   --field <a,b,c>      TSV projection (common: slug,at,kind,title,scope_systems)
 
+The default list (no --all, no --since) shows the 50 newest non-expired notices
+and ends with "N more notices; use --all or --since" (on stderr for --json and
+--field). --all and --since are not capped.
+
 Examples:
   situations notices
   situations notices --since 30m --system lastdbd
   situations notices --field slug,at,kind,title`;
     case "schema":
-      return `situations schema [--type situation|notice|index|all] [--json]
+      return `situations schema [--type situation|notice|index|index_entry|notice_history|all] [--json]
 
 Print the schema payload(s) for publishing/loading. Default is all.`;
+    case "doctor":
+      return `situations doctor [--json] [--config <path>]
+
+Read-only checks of the index layout. Exits 1 when a check fails.
+  - IndexEntry and NoticeHistory: loaded on the node, pinned in the config
+  - each gate partition (active_situations, situation_history_days,
+    notice_history_days): copied from its legacy blob? did an older binary write
+    the legacy blob after the copy (drift)? can every entry be read?
+
+Run it after an upgrade, after \`situations init\`.`;
     case "publish-status":
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
@@ -313,6 +339,8 @@ async function main(argv: string[]): Promise<number> {
       return schemaCmd(rest);
     case "init":
       return await initCmd(rest);
+    case "doctor":
+      return await doctorCmd(rest);
     case "put":
       return await putCmd(rest);
     case "list":
@@ -449,12 +477,21 @@ function schemaCmd(rest: string[]): number {
   if (type === "situation") payload = situationSchema;
   else if (type === "notice") payload = noticeSchema;
   else if (type === "index") payload = indexSchema;
-  else if (type === "all") payload = { situation: situationSchema, notice: noticeSchema, index: indexSchema };
-  else {
+  else if (type === "index_entry" || type === "index-entry") payload = indexEntrySchema;
+  else if (type === "notice_history" || type === "notice-history") payload = noticeHistorySchema;
+  else if (type === "all") {
+    payload = {
+      situation: situationSchema,
+      notice: noticeSchema,
+      index: indexSchema,
+      index_entry: indexEntrySchema,
+      notice_history: noticeHistorySchema,
+    };
+  } else {
     throw new FsituationsError({
       code: "invalid_type",
       message: `Unknown --type "${type}".`,
-      hint: "Use situation, notice, index, or all.",
+      hint: "Use situation, notice, index, index_entry, notice_history, or all.",
     });
   }
   console.log(JSON.stringify(payload, null, 2));
@@ -506,6 +543,8 @@ async function initCmd(rest: string[]): Promise<number> {
   const situationHash = parsed.values["schema-hash"] ?? declared.situation;
   const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
   const indexHash = declared.index;
+  const indexEntryHash = declared.index_entry;
+  const noticeHistoryHash = declared.notice_history;
 
   if (!situationHash) {
     throw new FsituationsError({
@@ -518,6 +557,8 @@ async function initCmd(rest: string[]): Promise<number> {
   const schemaHashes: Record<string, string> = { situation: situationHash };
   if (noticeHash) schemaHashes.notice = noticeHash;
   if (indexHash) schemaHashes.index = indexHash;
+  if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
+  if (noticeHistoryHash) schemaHashes.notice_history = noticeHistoryHash;
 
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
@@ -528,11 +569,34 @@ async function initCmd(rest: string[]): Promise<number> {
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath);
+  // One-time: the long-lived notices still live in the legacy `recent_notices`
+  // blob get their entries, so the default `notices` list shows them.
+  let seededLongLived = 0;
+  if (indexEntryHash && noticeHistoryHash) {
+    try {
+      const seedNode = newNodeClient({
+        baseUrl: nodeUrl,
+        userHash: identity.userHash,
+        socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
+      });
+      seededLongLived = await seedLongLivedNotices(seedNode, cfg, {
+        entry: indexEntryHash,
+        notice: noticeHistoryHash,
+      });
+    } catch (err) {
+      console.error(
+        `warning: could not seed the long-lived notices from the legacy blob: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   const result = {
     config: cfgPath,
     schemaHash: situationHash,
     noticeSchemaHash: noticeHash ?? null,
     indexSchemaHash: indexHash ?? null,
+    indexEntrySchemaHash: indexEntryHash ?? null,
+    noticeHistorySchemaHash: noticeHistoryHash ?? null,
+    seededLongLivedNotices: seededLongLived,
     userHash: identity.userHash,
   };
   if (parsed.values.json) {
@@ -549,8 +613,39 @@ async function initCmd(rest: string[]): Promise<number> {
         "warning: Index schema not declared/loaded — list/preflight/notices require re-init on Mini; product-schema scans are not supported.",
       );
     }
+    if (!indexEntryHash || !noticeHistoryHash) {
+      console.error(
+        "warning: IndexEntry or NoticeHistory schema not declared/loaded — `put` and `notice` will fail and reads use the legacy Index blobs until re-init on Mini.",
+      );
+    }
   }
   return 0;
+}
+
+async function doctorCmd(rest: string[]): Promise<number> {
+  const parsed = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (parsed.values.help) {
+    console.log(usageFor("doctor"));
+    return 0;
+  }
+  const { cfg, node } = loadCtx({ configPath: parsed.values.config });
+  const checks = await runDoctor(node, cfg);
+  if (parsed.values.json) {
+    console.log(JSON.stringify(checks, null, 2));
+  } else {
+    for (const check of checks) {
+      console.log(`${check.status.toUpperCase().padEnd(4)} ${check.name}: ${check.detail}`);
+    }
+  }
+  return checks.some((check) => check.status === "fail") ? 1 : 0;
 }
 
 async function putCmd(rest: string[]): Promise<number> {
@@ -723,7 +818,9 @@ async function preflightCmd(rest: string[]): Promise<number> {
       automation: parsed.values.automation,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // The hint carries the repair (for a dangling entry, the exact `put` that removes it).
+    const hint = err instanceof FsituationsError && err.hint ? ` ${err.hint}` : "";
+    const message = `${err instanceof Error ? err.message : String(err)}${hint}`;
     if (parsed.values.json) {
       console.log(
         JSON.stringify(
@@ -944,6 +1041,9 @@ async function noticesCmd(rest: string[]): Promise<number> {
   const all = await listNoticesIndexed(node, cfg, {
     all: parsed.values.all,
     since: parsed.values.since,
+    system: parsed.values.system,
+    app: parsed.values.app,
+    kind: parsed.values.kind,
   });
   const visible = filterNotices(all, {
     all: parsed.values.all,
@@ -952,14 +1052,25 @@ async function noticesCmd(rest: string[]): Promise<number> {
     app: parsed.values.app,
     kind: parsed.values.kind,
   });
+  // The default list (no --all, no --since) is capped: agents read it at session
+  // start, and a busy day has hundreds of notices. --all and --since are not.
+  const capped = !parsed.values.all && !parsed.values.since && visible.length > DEFAULT_NOTICE_LIMIT;
+  const shown = capped ? visible.slice(0, DEFAULT_NOTICE_LIMIT) : visible;
+  const footer = capped
+    ? `${visible.length - DEFAULT_NOTICE_LIMIT} more notices; use --all or --since`
+    : null;
   if (fields.length > 0) {
-    printFieldProjection(visible as unknown as FieldProjectionSource[], fields, (line) =>
+    printFieldProjection(shown as unknown as FieldProjectionSource[], fields, (line) =>
       console.log(line),
     );
+    if (footer) console.error(footer);
   } else if (parsed.values.json) {
-    console.log(JSON.stringify(visible, null, 2));
+    // stdout stays one JSON array; the footer goes to stderr.
+    console.log(JSON.stringify(shown, null, 2));
+    if (footer) console.error(footer);
   } else {
-    console.log(renderNoticesList(visible));
+    console.log(renderNoticesList(shown));
+    if (footer) console.log(footer);
   }
   return 0;
 }

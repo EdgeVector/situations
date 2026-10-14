@@ -818,7 +818,9 @@ async function preflightCmd(rest: string[]): Promise<number> {
       automation: parsed.values.automation,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // The hint carries the repair (for a dangling entry, the exact `put` that removes it).
+    const hint = err instanceof FsituationsError && err.hint ? ` ${err.hint}` : "";
+    const message = `${err instanceof Error ? err.message : String(err)}${hint}`;
     if (parsed.values.json) {
       console.log(
         JSON.stringify(

@@ -3,6 +3,7 @@ import {
   OWNER_APP_ID,
   indexEntrySchema,
   indexSchema,
+  noticeHistorySchema,
   noticeSchema,
   situationSchema,
   type AddSchemaRequest,
@@ -19,6 +20,7 @@ const TARGETS: SchemaTarget[] = [
   { key: "notice", schema: noticeSchema },
   { key: "index", schema: indexSchema },
   { key: "index_entry", schema: indexEntrySchema },
+  { key: "notice_history", schema: noticeHistorySchema },
 ];
 
 /**
@@ -68,9 +70,22 @@ async function resolveOrDeclareOne(
   }
 }
 
-/** Resolve or declare the `IndexEntry` schema alone (the lazy pin on first write). */
-export async function resolveOrDeclareIndexEntryHash(node: NodeClient): Promise<string | null> {
-  return resolveOrDeclareOne(node, { key: "index_entry", schema: indexEntrySchema }, { quiet: true });
+/**
+ * The hashes of the entry-partition schemas the node has ALREADY loaded, found
+ * through `GET /api/schemas` (one call). Never declares: a declare is a Schema
+ * Service round trip, and release builds default to the PROD service, so only
+ * `situations init` (a deliberate step) declares. A reader and a writer use this
+ * when the config carries no pin, so a config that cannot be written (a
+ * read-only home) still finds the schemas the node has.
+ */
+export async function resolveLoadedLayoutHashes(
+  node: NodeClient,
+): Promise<{ index_entry: string | null; notice_history: string | null }> {
+  const loaded = await node.listSchemas();
+  return {
+    index_entry: pickLoadedHash(loaded, { key: "index_entry", schema: indexEntrySchema }, true),
+    notice_history: pickLoadedHash(loaded, { key: "notice_history", schema: noticeHistorySchema }, true),
+  };
 }
 
 export async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {
@@ -81,7 +96,12 @@ async function resolveLoadedHash(
   node: NodeClient,
   target: SchemaTarget,
 ): Promise<string | null> {
-  const loaded = await node.listSchemas();
+  return pickLoadedHash(await node.listSchemas(), target);
+}
+
+type LoadedSchemas = Awaited<ReturnType<NodeClient["listSchemas"]>>;
+
+function pickLoadedHash(loaded: LoadedSchemas, target: SchemaTarget, strict = false): string | null {
   const candidates = loaded.filter(
     (schema) =>
       schema.owner_app_id === OWNER_APP_ID &&
@@ -92,5 +112,7 @@ async function resolveLoadedHash(
   );
   // Prefer descriptive identity match; name may be the namespaced string or the
   // canonical hash depending on node version.
+  // A reader or writer needs a schema with every field; only `init` accepts a partial match.
+  if (strict) return full?.name ?? null;
   return full?.name ?? candidates[0]?.name ?? null;
 }

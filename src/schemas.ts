@@ -208,20 +208,14 @@ export const noticeSchema: AddSchemaRequest = {
 const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
 
 /**
- * Small cached rollups so the default `notices` read point-reads one small row
- * instead of a full-history scan of the Notice schema. List operations require
- * this schema; a missing row is an empty fresh-node state and never falls back
- * to a product-schema scan.
- *
- * Since 2026-10-12 only ONE key is written here: `recent_notices`, kept under
- * `RECENT_NOTICES_INDEX_MAX_BYTES` (32 KiB). Every list that grows (notice and
- * situation history, the active-situation set) lives in `IndexEntry`
- * (`indexEntrySchema`) as one small record per entry. The other keys this
- * schema once held (`active_situations`, `notice_history_days`,
- * `notice_history_day:<day>`, `situation_history_days`,
- * `situation_history_day:<day>`) are LEGACY: they are read once to seed
- * `IndexEntry`, never rewritten, never deleted. One atom must stay under the
- * node's 64 KiB atom-content limit; those blobs grew past it.
+ * LEGACY, read-only. This schema held every list of this app as one JSON blob
+ * per key (`active_situations`, `recent_notices`, `notice_history_day:<day>`,
+ * `situation_history_day:<day>`, `notice_history_days`,
+ * `situation_history_days`). One field value is one atom; those blobs measured
+ * 66 to 161 KB and grew 40 KB in a day, past the node's atom ceiling, and every
+ * notice rewrote a whole blob. Nothing writes this schema any more. Each blob is
+ * read once to seed `IndexEntry` / `NoticeHistory`, never rewritten, never
+ * deleted. The schema stays declared because that read needs it.
  */
 export const indexSchema: AddSchemaRequest = {
   schema: {
@@ -229,15 +223,15 @@ export const indexSchema: AddSchemaRequest = {
     owner_app_id: OWNER_APP_ID,
     descriptive_name: "Index",
     purpose_statement:
-      "Small cached rollups (recent notices) so default notices reads never full-scan the underlying Notice table; legacy history blobs are read-only",
+      "Legacy read-only rollup blobs (active situations, notice and situation history by day); superseded by the IndexEntry and NoticeHistory partitions",
     schema_type: "Hash",
     key: { hash_field: "key" },
     fields: [...INDEX_FIELDS],
     field_types: fieldTypes(INDEX_FIELDS, []),
     field_descriptions: {
-      key: "index name: recent_notices (written); active_situations and *_history_day* keys are legacy read-only",
-      payload_json: "JSON blob for this index; shape depends on key; at most 32 KiB serialized",
-      updated_at: "RFC 3339 timestamp of the last index rebuild/patch",
+      key: "legacy index name; every key is read-only",
+      payload_json: "legacy JSON blob for this key; read once to seed the entry partitions",
+      updated_at: "RFC 3339 timestamp of the last legacy write; a value newer than a partition marker's migrated_at means an old binary wrote after the migration",
     },
     field_data_classifications: generalClassifications(INDEX_FIELDS),
   },
@@ -246,25 +240,19 @@ export const indexSchema: AddSchemaRequest = {
 
 /**
  * One index entry per HashRange record: (`ie_h` partition) x (`ie_r` entry key).
- * A partition is a list that grows: the notices of one day, the situations
- * created on one day, the days that hold notices, the set of active situations.
- * A partition is read with ONE range query under its hash; one entry is added
- * or removed with ONE small write. No code reads, rewrites or caps a whole
- * list.
+ * A partition is a list that grows. A partition is read with ONE range query
+ * under its hash; one entry is added or removed with ONE small write. No code
+ * reads, rewrites or caps a whole list.
  *
- * Partitions (hash values; the entry key is the range):
- *   notice_history_day:<YYYY-MM-DD>     notice slug     filter + sort fields, and the notice when it fits
- *   notice_history_days                 YYYY-MM-DD      empty
+ * This schema holds NO time-ordered log and carries NO TTL:
+ *   active_situations                   situation slug  status, severity, expires_at, updated_at, and the situation when it fits
  *   situation_history_day:<YYYY-MM-DD>  situation slug  created_at
  *   situation_history_days              YYYY-MM-DD      empty
- *   active_situations                   situation slug  status, severity, expires_at, updated_at, and the situation when it fits
+ *   notice_history_days                 YYYY-MM-DD      empty
+ * (The notices themselves are in `NoticeHistory`, the TTL-ready schema.)
  *
- * Every partition also holds one reserved entry key, `__migrated__`
- * (`INDEX_ENTRY_MIGRATED_RANGE`), written in the same batch that copies the
- * partition's legacy `Index` blob in. A slug is `[a-z0-9][a-z0-9_-]*` and a day
- * is `YYYY-MM-DD`, so neither can collide with it. Without the marker a
- * non-empty partition is ambiguous (fully migrated, or one new entry while the
- * old blob still holds the rest).
+ * Every partition seeded from a legacy blob also holds marker records, entry
+ * keys `__migrated__.<k>`: see `INDEX_ENTRY_MIGRATED_PREFIX`.
  *
  * Field names stay opaque (`ie_*`), as in brain's `*_hashrange_v1` schemas:
  * Schema Service field-unifies semantic names (slug, title, status, ...) into an
@@ -273,15 +261,28 @@ export const indexSchema: AddSchemaRequest = {
  *
  * `ie_payload` is the JSON of ONE small entry, at most `INDEX_ENTRY_MAX_BYTES`
  * (4 KiB). An entry carries the slug plus the fields a reader filters and sorts
- * on, and the whole Notice or Situation only when the entry still fits that
- * budget (a real notice or situation does). An entry that does not fit is
- * hydrated from the Situation or Notice record by slug with one batched
- * multi-get. The record stays the source of truth, and the record write and its
- * entries are one batch.
+ * on, and the whole Situation only when the entry still fits that budget (a real
+ * situation does). An entry that does not fit is hydrated from its record by slug
+ * with one batched multi-get. The record stays the source of truth, and the
+ * record write and its entries are one batch.
  */
 export const INDEX_ENTRY_MARKER = "situations_index_entry_v1";
-export const INDEX_ENTRY_MIGRATED_RANGE = "__migrated__";
+export const NOTICE_HISTORY_MARKER = "situations_notice_history_v1";
 export const INDEX_ENTRY_MAX_BYTES = 4 * 1024;
+/**
+ * A migration marker is one or more records, entry keys `__migrated__.0`,
+ * `__migrated__.1`, ... Each carries `{ migrated_at, chunk, of, ids }`: when the
+ * legacy blob was copied, which chunk this is of how many, and the ids (slugs or
+ * days) the copy contained. A slug is `[a-z0-9][a-z0-9_-]*` and a day is
+ * `YYYY-MM-DD`, so neither collides with the prefix.
+ *
+ * A reader trusts a marker only for the ids it lists, and only when every chunk
+ * is present. A listed id with no entry yet (a device synced the marker before
+ * the entries) is read from the legacy blob and its record. A marker is written
+ * only after a legacy row with at least one entry was really copied: an empty
+ * partition is never marked, because a missed read looks the same as no row.
+ */
+export const INDEX_ENTRY_MIGRATED_PREFIX = "__migrated__.";
 const INDEX_ENTRY_FIELDS = ["ie_h", "ie_r", "ie_payload", "ie_marker"] as const;
 
 export const indexEntrySchema: AddSchemaRequest = {
@@ -290,15 +291,15 @@ export const indexEntrySchema: AddSchemaRequest = {
     owner_app_id: OWNER_APP_ID,
     descriptive_name: "IndexEntry_hashrange_v1",
     purpose_statement:
-      "One small index entry per HashRange record (partition x entry key) so notice history, situation history and the active-situation set are read with a keyed range query and grown with one small write, never as one rewritten blob",
+      "One small index entry per HashRange record (partition x entry key) so the active-situation set and situation history are read with a keyed range query and grown with one small write, never as one rewritten blob",
     schema_type: "HashRange",
     key: { hash_field: "ie_h", range_field: "ie_r" },
     fields: [...INDEX_ENTRY_FIELDS],
     field_types: fieldTypes(INDEX_ENTRY_FIELDS, []),
     field_descriptions: {
-      ie_h: "opaque partition token (notice_history_day:<day>, active_situations, ...)",
-      ie_r: "opaque entry token (record slug, a day, or the reserved migrated-marker range)",
-      ie_payload: "json object of ONE entry (keys, filter fields, and the record when it fits), at most 4 KiB; empty for day entries and the marker row",
+      ie_h: "opaque partition token (active_situations, situation_history_day:<day>, ...)",
+      ie_r: "opaque entry token (record slug, a day, or a __migrated__.<k> marker chunk)",
+      ie_payload: "json object of ONE entry (keys, filter fields, and the record when it fits), at most 4 KiB; empty for day entries",
       ie_marker: "constant token situations_index_entry_v1",
     },
     field_classifications: {
@@ -312,12 +313,67 @@ export const indexEntrySchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export type RecordType = "situation" | "notice" | "index" | "index_entry";
+/**
+ * Notice history: a time-ordered LOG, one record per notice, shaped for a node
+ * TTL (lastdb#155). A TTL needs the range key to START with the entry time as
+ * unix seconds zero-padded to 20 digits; a key in any other form never expires.
+ *
+ *   hash  `nh_h` = `notice_history_day:<YYYY-MM-DD>`   a UTC DAY slice, never an
+ *                  hour slice: the node's registry of hash partitions never shrinks
+ *   range `nh_r` = `<20-digit unix seconds of created_at>#<slug>`
+ *
+ * `created_at` is the time the notice was recorded and never changes, so an
+ * update rewrites the same key. The slug is the text after the first `#` (a slug
+ * has none). The day is the UTC day of the notice's `at`.
+ *
+ * PROPOSED TTL: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md
+ * 3.5). THIS CODE SETS NO POLICY. The manifest TTL step is built separately, and
+ * a policy has no backfill and must name BOTH installed names of this schema
+ * (`fsituations/NoticeHistory` and its canonical hash). Entries written before a
+ * policy exists will never expire.
+ *
+ * The migration marker keys of a partition are `<far-future seconds>#__migrated__.<k>`
+ * (year 2286), so a TTL never expires a marker.
+ *
+ * Opaque `nh_*` names, for the same reason as `ie_*`.
+ */
+const NOTICE_HISTORY_FIELDS = ["nh_h", "nh_r", "nh_payload", "nh_marker"] as const;
+
+export const noticeHistorySchema: AddSchemaRequest = {
+  schema: {
+    name: "NoticeHistory",
+    owner_app_id: OWNER_APP_ID,
+    descriptive_name: "NoticeHistory_hashrange_v1",
+    purpose_statement:
+      "One notice history entry per HashRange record (UTC day partition x creation time and slug) so notice history is read by day and expires by a node TTL, never as one rewritten blob",
+    schema_type: "HashRange",
+    key: { hash_field: "nh_h", range_field: "nh_r" },
+    fields: [...NOTICE_HISTORY_FIELDS],
+    field_types: fieldTypes(NOTICE_HISTORY_FIELDS, []),
+    field_descriptions: {
+      nh_h: "opaque partition token notice_history_day:<YYYY-MM-DD> (UTC day of the notice's at)",
+      nh_r: "opaque entry token: 20-digit zero-padded unix seconds of created_at, '#', then the notice slug",
+      nh_payload: "json object of ONE entry (filter fields, and the notice when it fits), at most 4 KiB",
+      nh_marker: "constant token situations_notice_history_v1",
+    },
+    field_classifications: {
+      nh_h: ["no_index", "metadata"],
+      nh_r: ["no_index", "metadata"],
+      nh_payload: ["no_index", "metadata"],
+      nh_marker: ["no_index", "metadata"],
+    },
+    field_data_classifications: generalClassifications(NOTICE_HISTORY_FIELDS),
+  },
+  mutation_mappers: {},
+};
+
+export type RecordType = "situation" | "notice" | "index" | "index_entry" | "notice_history";
 
 export function fieldsFor(type: RecordType): string[] {
   if (type === "situation") return [...SITUATION_FIELDS];
   if (type === "notice") return [...NOTICE_FIELDS];
   if (type === "index") return [...INDEX_FIELDS];
   if (type === "index_entry") return [...INDEX_ENTRY_FIELDS];
+  if (type === "notice_history") return [...NOTICE_HISTORY_FIELDS];
   throw new Error(`Unknown record type: ${type}`);
 }

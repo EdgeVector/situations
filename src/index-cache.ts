@@ -1,15 +1,12 @@
-// Thin point-read/point-write helpers over the optional `Index` schema (see
-// schemas.ts). Each row is a small named JSON blob. `recent_notices` is the one
-// key still written; notice.ts keeps it patched on every upsert so the default
-// `notices` read never pays for a full-history scan of the Notice schema. The
-// other keys (`active_situations`, `*_history_day*`) are legacy blobs that
-// index-entry.ts reads once to seed `IndexEntry` and never touches again.
+// Read-only access to the LEGACY `Index` schema (see schemas.ts). Each row is a
+// JSON blob from before the entry partitions existed. Nothing writes it any
+// more; index-entry.ts reads a blob once to seed a partition, and reads its
+// `updated_at` to notice an old binary that wrote after the migration.
 
-import { FsituationsError, type BatchMutationOp, type NodeClient } from "./client.ts";
+import { FsituationsError, type NodeClient } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
-import { ATOM_BUDGET_BYTES, atomBytes } from "./atom-size.ts";
 
-const INDEX_QUERY_FIELDS = ["key", "payload_json", "updated_at"];
+const LEGACY_FIELDS = ["key", "payload_json", "updated_at"];
 
 export function hasIndexSchema(cfg: { schemaHashes: Record<string, string> }): boolean {
   return Boolean(cfg.schemaHashes.index && cfg.schemaHashes.index.length > 0);
@@ -24,53 +21,69 @@ export function requireIndexSchema(cfg: { schemaHashes: Record<string, string> }
   });
 }
 
-/** Returns null when the schema isn't declared yet, or the row hasn't been seeded. */
+export type LegacyRow = { payload: unknown; updated_at: string };
+
+/**
+ * One legacy blob, or null when there is no such row (or the Index schema is not
+ * declared). A row whose payload does not parse THROWS: an unreadable blob is a
+ * hold nobody can read, and reading it as "no row" would let a gate answer OK.
+ *
+ * `confirmAbsent` asks once more before it believes "no row": `/api/query` can
+ * null a real row out of a page under load, and a reader that trusts the first
+ * answer serves one call without the legacy entries.
+ */
+export async function readLegacyRow(
+  node: NodeClient,
+  cfg: Config,
+  key: string,
+  opts: { confirmAbsent?: boolean } = {},
+): Promise<LegacyRow | null> {
+  if (!hasIndexSchema(cfg)) return null;
+  const query = () =>
+    node.queryAll({
+      schemaHash: schemaHashFor("index", cfg),
+      fields: LEGACY_FIELDS,
+      filter: { HashKey: key },
+    });
+  let row = (await query()).results[0];
+  if (!row && opts.confirmAbsent) row = (await query()).results[0];
+  if (!row) return null;
+  try {
+    return {
+      payload: JSON.parse(String(row.fields.payload_json ?? "null")) as unknown,
+      updated_at: String(row.fields.updated_at ?? ""),
+    };
+  } catch (err) {
+    throw new FsituationsError({
+      code: "index_legacy_unreadable",
+      message: `Legacy Index row "${key}" is not valid JSON (${err instanceof Error ? err.message : String(err)}).`,
+      hint: "The row cannot be read as a list of entries; fix or remove it before this partition is read.",
+    });
+  }
+}
+
+/** The `updated_at` of a legacy blob (one small field), or null when there is no row. */
+export async function readLegacyUpdatedAt(
+  node: NodeClient,
+  cfg: Config,
+  key: string,
+): Promise<string | null> {
+  if (!hasIndexSchema(cfg)) return null;
+  const res = await node.queryAll({
+    schemaHash: schemaHashFor("index", cfg),
+    fields: ["key", "updated_at"],
+    filter: { HashKey: key },
+  });
+  const row = res.results[0];
+  return row ? String(row.fields.updated_at ?? "") : null;
+}
+
+/** The payload of a legacy blob, or null. Throws on an unreadable one. */
 export async function readIndexPayload<T>(
   node: NodeClient,
   cfg: Config,
   key: string,
 ): Promise<T | null> {
-  if (!hasIndexSchema(cfg)) return null;
-  const res = await node.queryAll({
-    schemaHash: schemaHashFor("index", cfg),
-    fields: INDEX_QUERY_FIELDS,
-    filter: { HashKey: key },
-  });
-  const row = res.results[0];
-  if (!row) return null;
-  try {
-    return JSON.parse(String(row.fields.payload_json ?? "null")) as T;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The batch write that stores `payload` under `key`, or null when the schema is
- * not declared yet (pre-upgrade config). It is an upsert, so no read comes
- * first. The caller puts it in the same batch as the record write that made it
- * stale, so the two commit together.
- *
- * One `payload_json` value is one atom, and the node refuses an atom above
- * 64 KiB. This is the last line of defense: the only key still written here,
- * `recent_notices`, is capped at 32 KiB by its own writer, and a write that
- * would pass 48 KiB stops here with a name for the problem instead of a bare
- * HTTP 413 that also fails the record write batched with it.
- */
-export function indexRowOp(cfg: Config, key: string, payload: unknown): BatchMutationOp | null {
-  if (!hasIndexSchema(cfg)) return null;
-  const payloadJson = JSON.stringify(payload);
-  if (atomBytes(payloadJson) > ATOM_BUDGET_BYTES) {
-    throw new FsituationsError({
-      code: "index_payload_too_large",
-      message: `Index row "${key}" would be ${atomBytes(payloadJson)} bytes; one atom may not pass ${ATOM_BUDGET_BYTES}.`,
-      hint: "A list that grows belongs in IndexEntry (one record per entry), not in one Index row.",
-    });
-  }
-  return {
-    mutationType: "update",
-    schemaHash: schemaHashFor("index", cfg),
-    keyHash: key,
-    fields: { key, payload_json: payloadJson, updated_at: new Date().toISOString() },
-  };
+  const row = await readLegacyRow(node, cfg, key);
+  return row ? (row.payload as T) : null;
 }

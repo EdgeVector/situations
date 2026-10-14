@@ -1,12 +1,9 @@
-// One field value is one atom, and a LastDB node refuses an atom above 64 KiB
-// (`LASTDB_MAX_ATOM_CONTENT_BYTES`, default 65536; HTTP 413
-// `atom_content_too_large`). Budgets here are stricter than that limit so a
-// default-configured node is always safe.
-
-/** The node refuses one atom above this many serialized bytes by default. */
-export const ATOM_LIMIT_BYTES = 64 * 1024;
-/** No field value this app writes to an index may pass this many serialized bytes. */
-export const ATOM_BUDGET_BYTES = 48 * 1024;
+// One field value is one atom. A LastDB node refuses an atom above its ceiling
+// (`LASTDB_MAX_ATOM_CONTENT_BYTES`; the default is 256 KiB since lastdb#154,
+// HTTP 413 `atom_content_too_large`). This app keeps every atom it writes to an
+// index far below that: an index entry is at most `INDEX_ENTRY_MAX_BYTES`
+// (4 KiB, schemas.ts), and a list that grows is one record per entry, never one
+// field.
 
 /**
  * Size of one field value as the node measures an atom: the UTF-8 byte length

@@ -13,12 +13,6 @@ export type Config = {
   userHash: string;
   schemaHashes: Record<string, string>;
   nodeSocketPath?: string;
-  /**
-   * Where `readConfig` read this config. Runtime only: `writeConfig` never
-   * serializes it. A schema pin made while a command runs (the lazy `IndexEntry`
-   * declare) writes back to this file.
-   */
-  configPath?: string;
 };
 
 const SOCKET_FILE_NAME = "folddb.sock";
@@ -87,16 +81,15 @@ export function readConfig(path: string = defaultConfigPath()): Config {
     const msg = err instanceof Error ? err.message : String(err);
     throw new ConfigInvalidError(path, `not valid JSON (${msg})`);
   }
-  return { ...assertConfigShape(path, parsed), configPath: path };
+  return assertConfigShape(path, parsed);
 }
 
 export function writeConfig(config: Config, path: string = defaultConfigPath()): void {
   mkdirSync(dirname(path), { recursive: true });
-  const { configPath: _runtimeOnly, ...persisted } = config;
   // Write a sibling temp file, then rename: another situations process reading
   // this config at the same moment sees the old file or the new one, never half.
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(persisted, null, 2) + "\n", "utf8");
+  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
   renameSync(tmp, path);
 }
 

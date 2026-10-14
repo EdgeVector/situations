@@ -193,7 +193,8 @@ OBS_SENTRY_RELEASE=situations@0.1.0   # optional; defaults to package version
 
 ```bash
 bun run src/cli.ts schema
-bun run src/cli.ts init
+bun run src/cli.ts init     # once after an upgrade: declares + pins IndexEntry and NoticeHistory
+bun run src/cli.ts doctor   # read only: schemas, legacy copy, drift, unreadable entries
 # optional pin: bun run src/cli.ts init --schema-hash <canonical-hash> --notice-schema-hash <hash>
 bun run src/cli.ts put examples/forge-ci-containment.json
 bun run src/cli.ts list
@@ -278,41 +279,115 @@ payloads from `situations schema` on older nodes that lack declare-schema.
 The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
 and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.
 
-### Index layout (one atom stays under 64 KiB)
+### Index layout (a list that grows is one record per entry)
 
-A LastDB node refuses one atom above 64 KiB, and one field value is one atom.
-A list that grows is therefore never one field. Two schemas hold the indexes:
+A LastDB node refuses one atom above its ceiling (256 KiB by default since
+lastdb#154; HTTP 413 `atom_content_too_large`), and one field value is one
+atom. A list that grows is therefore never one field. The old `fsituations/Index`
+schema kept every list as one JSON blob and its blobs measured 66 to 161 KB and
+grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
-- `fsituations/Index` (Hash, key `key`): one row, `recent_notices`, capped at
-  32 KiB serialized. The default `situations notices` read is one point read of
-  it. A `--since` window that reaches past the oldest notice a full row holds
-  reads the day partitions below instead.
-- `fsituations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one small
-  record per entry, at most 4 KiB. The partition (`ie_h`) is read with one range
-  query; one entry is added with one small write.
+- `fsituations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
+  blob is read once to seed the partitions below and is never rewritten or
+  deleted. `recent_notices` is read only by a node that has not run
+  `situations init` yet (see "Default notices list").
+- `fsituations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one record
+  of at most 4 KiB per entry. No TTL.
+- `fsituations/NoticeHistory_hashrange_v1` (HashRange, `nh_h` x `nh_r`): the
+  notice log, shaped for a node TTL. Its range key starts with 20 digits.
 
-| Partition (`ie_h`) | Entry key (`ie_r`) | Entry holds |
-|---|---|---|
-| `notice_history_day:<YYYY-MM-DD>` | notice slug | `at`, `created_at`, `expires_at`, `kind`, `scope_systems`, `scope_apps`, and the notice when it fits |
-| `notice_history_days` | `YYYY-MM-DD` | nothing |
-| `situation_history_day:<YYYY-MM-DD>` | situation slug | `created_at` |
-| `situation_history_days` | `YYYY-MM-DD` | nothing |
-| `active_situations` | situation slug | `status`, `severity`, `updated_at`, `expires_at`, and the situation when it fits |
+| Schema | Partition (hash) | Entry key (range) | Entry holds |
+|---|---|---|---|
+| `IndexEntry` | `active_situations` | situation slug | `status`, `severity`, `updated_at`, `expires_at`, and the situation when it fits |
+| `IndexEntry` | `situation_history_day:<YYYY-MM-DD>` | situation slug | `created_at` |
+| `IndexEntry` | `situation_history_days` | `YYYY-MM-DD` | nothing |
+| `IndexEntry` | `notice_history_days` | `YYYY-MM-DD` | nothing |
+| `NoticeHistory` | `notice_history_day:<YYYY-MM-DD>` (UTC day of `at`) | `<20-digit unix seconds of created_at>#<slug>` | `at`, `created_at`, `expires_at`, `kind`, `scope_systems`, `scope_apps`, and the notice when it fits |
 
-An entry carries the whole notice or situation only when the entry stays under
-4 KiB, which every real one does (about 1 KiB). One record is 14 to 21 fields,
-and each field is an atom the node loads and keeps in its warm set, against one
-atom for the entry. A notice or situation that does not fit is read from its
-record by slug with one multi-get (`HashRangeKeys`); `situation_history_day`
-entries always are. `put` and `notice` write the record and its entries in ONE
-batch (`POST /api/mutations/batch`), so an entry never lags its record and a
-record is never missing from its index.
+A partition is read with one range query and grown with one small write. An
+entry carries the whole notice or situation only when it stays under 4 KiB,
+which every real one does (about 1 KiB). One record is 14 to 21 fields, and each
+field is an atom the node loads and keeps in its warm set, against one atom for
+the entry. A record that does not fit is read from its own schema by slug with
+one multi-get (`HashRangeKeys`); `situation_history_day` entries always are.
+`put` and `notice` write the record and its entries in ONE
+`POST /api/mutations/batch`, so an entry never lags its record.
 
-Upgrade from the old layout is lazy, per partition, and never deletes. The old
-`Index` blobs (`active_situations`, `notice_history_day:*`, `situation_history_day:*`,
-`*_history_days`) stay on the node and are read once: the first read or write
-that finds a partition without its `__migrated__` marker copies the blob's
-entries into the partition with one batch write that ends with the marker. After
-that the blob is never read or written. Until the config pins `IndexEntry`
-(`situations init`, or the first `put`/`notice`, which declares and pins it),
-reads keep answering from the old blobs.
+**A write touches only the entry of the record it writes.** Several devices may
+write at once; per atom the last writer wins. A writer therefore never reads a
+list, rewrites it, or deletes another entry (a stale reader's delete would have
+the later write time and win). A reader drops an entry that has expired by its
+own clock.
+
+**Preflight fails closed.** An entry that cannot be parsed, or that points at no
+record, stops `preflight` with exit 3 (and `list --all`, `notices --all`)
+instead of being skipped.
+
+#### Default notices list
+
+There is no cached "recent notices" row any more: it was one atom rewritten by
+every writer (two writers lost a notice from it for good) and it had to be
+capped. `situations notices` reads the day partitions that can hold the notice:
+`--all` every day, `--since <window>` the days of the window, and with neither
+today and yesterday (UTC), because the default expiry is 24 h from `at`.
+Output is the same, except that a notice with a custom expiry longer than 24 h
+and an `at` older than yesterday is no longer in the default list (use `--since`
+or `--all`).
+
+#### TTL-ready shape (PROPOSED; this code sets no policy)
+
+A node TTL (lastdb#155) reads the entry time from the first 20 digits of a range
+key: a key in any other form never expires. So `NoticeHistory` uses
+`<20-digit zero-padded unix seconds of created_at>#<slug>` (`created_at` never
+changes, so an update rewrites one key; the slug is the text after the first
+`#`). The hash is a UTC DAY slice, never an hour slice: the node's registry of
+hash partitions never shrinks. Migration marker keys use year 2286 so a TTL never
+reaches them. `IndexEntry` (active set, situation history, the two day lists)
+is not a log and gets no TTL; the day lists grow by one tiny record a day.
+
+Proposed policy: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md,
+section 3.5). The manifest TTL step is built separately. A policy has no
+backfill, must exist before the first write, and must name BOTH installed names
+of the schema (`fsituations/NoticeHistory` and its canonical hash). Entries
+written before a policy exists will never expire.
+
+#### Migration from the old blobs (per partition, nothing deleted, no scan)
+
+A reader or writer that finds a partition not yet copied reads that partition's
+legacy blob and copies its entries in with ONE batch that ends with marker
+records `__migrated__.<k>`: `{ migrated_at, chunk, of, ids }`, the time of the
+copy and the ids (slugs or days) it contained. Rules:
+
+1. A marker is written only after a legacy row with at least one entry was
+   really copied. A partition with no legacy row is never marked, because a
+   missed read looks exactly like no row; it re-checks the legacy row on each
+   read (one point read, asked twice before a reader believes "no row").
+2. A reader trusts a marker only for the ids it lists, and only when every chunk
+   is present. A listed id with no entry yet (a device synced the marker before
+   the entries) is served from the legacy blob and read from its record.
+3. For a gate partition (`active_situations` and the two day lists), a legacy
+   `updated_at` newer than the marker's `migrated_at` means an older binary wrote
+   the blob after the copy ("drift"). The blob is merged in (read from the
+   records), the marker is rewritten, and a warning goes to stderr.
+4. The legacy rows stay on the node for ever.
+
+#### Upgrade and rollout
+
+1. Install ONE `situations` binary with `app-safe-upgrade` (never flip
+   `~/.local/bin` by hand), then check `command -v situations`.
+2. Run `situations init` once. It declares and pins `IndexEntry` and
+   `NoticeHistory`. A `put` or `notice` never declares a schema: before `init`
+   it FAILS (`index_layout_missing`) rather than land a record no entry points
+   at, and reads keep answering from the legacy blobs. (A node started from a
+   release build with no `EXEMEM_ENV` uses the PROD Schema Service; a proof node
+   must set `EXEMEM_ENV=dev`.) A config that cannot be written (a read-only
+   home) works: with no pin, the schemas the node has loaded are used.
+3. Run `situations doctor`. It is read only and exits 1 on a failed check:
+   schemas loaded and pinned, each gate partition copied, drift, unreadable
+   entries.
+
+Rollout hazard: an OLD binary writes only the legacy blob and the new preflight
+reads the entries (drift is merged in, see rule 3); the NEW `put` stops writing
+the blob, so an old preflight misses situations put by the new binary. No other
+reader exists (last-stack, routines, fkanban, loom, brain and lastdb were
+searched). Flip once and do not run both.

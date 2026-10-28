@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { canonicalSchema } from "./canonical-vocabulary.ts";
 import { canonicalProfilesForHashes } from "./init-schema.ts";
 
 import { parseArgs } from "node:util";
@@ -476,19 +477,20 @@ function schemaCmd(rest: string[]): number {
     return 0;
   }
   const type = (parsed.values.type ?? "all").toLowerCase();
+  const publication = (request: typeof situationSchema) => ({...request,schema:canonicalSchema(request.schema)});
   let payload: unknown;
-  if (type === "situation") payload = situationSchema;
-  else if (type === "notice") payload = noticeSchema;
-  else if (type === "index") payload = indexSchema;
-  else if (type === "index_entry" || type === "index-entry") payload = indexEntrySchema;
-  else if (type === "notice_history" || type === "notice-history") payload = noticeHistorySchema;
+  if (type === "situation") payload = publication(situationSchema);
+  else if (type === "notice") payload = publication(noticeSchema);
+  else if (type === "index") payload = publication(indexSchema);
+  else if (type === "index_entry" || type === "index-entry") payload = publication(indexEntrySchema);
+  else if (type === "notice_history" || type === "notice-history") payload = publication(noticeHistorySchema);
   else if (type === "all") {
     payload = {
-      situation: situationSchema,
-      notice: noticeSchema,
-      index: indexSchema,
-      index_entry: indexEntrySchema,
-      notice_history: noticeHistorySchema,
+      situation: publication(situationSchema),
+      notice: publication(noticeSchema),
+      index: publication(indexSchema),
+      index_entry: publication(indexEntrySchema),
+      notice_history: publication(noticeHistorySchema),
     };
   } else {
     throw new FsituationsError({

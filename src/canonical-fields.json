@@ -1,0 +1,586 @@
+{
+  "policy_version": 1,
+  "fields": {
+    "operational_list_selector_key": {
+      "description": "the selector for an active situation list, a UTC history day list, or its copy state",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_entry_key": {
+      "description": "the situation or notice slug, UTC day, or reserved copy marker within an operational list",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_entry_json": {
+      "description": "a JSON-encoded operational list entry of at most 4 KiB, including an empty-day marker when needed",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_entry_version": {
+      "description": "the version marker of the operational list entry layout",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_bucket_key": {
+      "description": "the active_situations, all_situations, or recent_notices key of a legacy operational list",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_payload_json": {
+      "description": "the JSON-encoded contents of one legacy operational list",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_list_updated_at": {
+      "description": "the RFC 3339 instant when a legacy operational list was last updated",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_history_day_key": {
+      "description": "the notice_history_day prefix followed by the UTC date of a notice history bucket",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_history_event_order_key": {
+      "description": "the zero-padded Unix creation time and notice slug joined by # within one notice history day",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_history_entry_json": {
+      "description": "a JSON-encoded notice history entry of at most 4 KiB",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_history_entry_version": {
+      "description": "the version marker of the notice history entry layout",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_slug": {
+      "description": "the stable slug of an operational notice event",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_kind": {
+      "description": "the upgrade, restart, deploy, config, cutover, or other kind of an operational notice",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_title": {
+      "description": "the one-line title of an operational notice event",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_summary": {
+      "description": "the plain-text summary of an operational notice event",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_occurred_at": {
+      "description": "the RFC 3339 instant when the event in an operational notice occurred",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_scope_system_names": {
+      "description": "the system names within the scope of an operational situation or notice",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_scope_app_ids": {
+      "description": "the app identifiers within the scope of an operational notice",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_actor_identifier": {
+      "description": "the person, agent, or routine identifier responsible for the event in an operational notice",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_slug": {
+      "description": "the stable slug of an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_severity_hint": {
+      "description": "the info or warn severity hint of an operational notice",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_expires_at_text": {
+      "description": "the RFC 3339 expiration instant as text, or an empty value for a notice without expiration",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_record_created_at": {
+      "description": "the RFC 3339 instant when an operational notice record was created",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "related_work_card_slugs": {
+      "description": "the work card slugs related to an operational situation or notice",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "related_knowledge_record_slugs": {
+      "description": "the knowledge record slugs related to an operational situation or notice",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_title": {
+      "description": "the one-line title of an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_summary": {
+      "description": "the plain-text summary of the current operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_status": {
+      "description": "the active, monitoring, resolved, or archived lifecycle status of an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_severity": {
+      "description": "the p0, p1, p2, or p3 severity of an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_scope_repository_names": {
+      "description": "the repository names within the scope of an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_scope_routine_names": {
+      "description": "the routine names within the scope of an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_scope_automation_ids": {
+      "description": "the automation identifiers within the scope of an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_current_phase_id": {
+      "description": "the identifier of the current phase of an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_phase_list_json": {
+      "description": "a JSON-encoded list of operational phases and their scoped action rules",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_blocked_action_names": {
+      "description": "the action names prohibited by an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_allowed_action_names": {
+      "description": "the action names explicitly allowed by an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_approval_required_action_names": {
+      "description": "the action names that require operator approval under an operational situation",
+      "field_type": {
+        "Array": "String"
+      },
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_preflight_message": {
+      "description": "the message presented to an agent when an operational preflight rule matches",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_owner_identifier": {
+      "description": "the person or agent identifier responsible for an operational situation",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_created_at": {
+      "description": "the RFC 3339 instant when an operational situation was created",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_updated_at": {
+      "description": "the RFC 3339 instant when an operational situation was last updated",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_situation_expires_at_text": {
+      "description": "the RFC 3339 expiration instant as text, or an empty value for an operational situation without expiration",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_snapshot_id": {
+      "description": "the stable identifier of an operational posture and notice snapshot",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "snapshot_captured_at": {
+      "description": "the RFC 3339 instant when a metadata snapshot was captured",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_posture_count_decimal_text": {
+      "description": "the base-10 text encoding of the count of active postures in one snapshot",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_count_decimal_text": {
+      "description": "the base-10 text encoding of the count of notice events in one snapshot",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_posture_summary_list_json": {
+      "description": "a JSON-encoded list of short active operational posture summaries",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_event_summary_list_json": {
+      "description": "a JSON-encoded list of short operational notice event summaries",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_snapshot_schema_hashes_json": {
+      "description": "a JSON-encoded map of the schema identities used by an operational snapshot",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_blocked_action_list_json": {
+      "description": "a JSON-encoded list of prohibited action names in a short operational posture summary",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "operational_posture_summary_captured_at": {
+      "description": "the RFC 3339 instant when a short operational posture summary was captured",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_scope_system_names_csv": {
+      "description": "the comma-separated system names in a short operational notice summary",
+      "field_type": "String",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    },
+    "notice_summary_captured_at": {
+      "description": "the RFC 3339 instant when a short operational notice summary was captured",
+      "field_type": "DateTime",
+      "version": 1,
+      "classification": {
+        "sensitivity_level": 0,
+        "data_domain": "general"
+      }
+    }
+  },
+  "schemas": {
+    "IndexEntry_hashrange_v1": {
+      "ie_h": "operational_list_selector_key",
+      "ie_r": "operational_list_entry_key",
+      "ie_payload": "operational_list_entry_json",
+      "ie_marker": "operational_list_entry_version"
+    },
+    "Index": {
+      "key": "operational_list_bucket_key",
+      "payload_json": "operational_list_payload_json",
+      "updated_at": "operational_list_updated_at"
+    },
+    "NoticeHistory_hashrange_v1": {
+      "nh_h": "notice_history_day_key",
+      "nh_r": "notice_history_event_order_key",
+      "nh_payload": "notice_history_entry_json",
+      "nh_marker": "notice_history_entry_version"
+    },
+    "Notice": {
+      "slug": "notice_event_slug",
+      "kind": "notice_event_kind",
+      "title": "notice_event_title",
+      "summary": "notice_event_summary",
+      "at": "notice_event_occurred_at",
+      "scope_systems": "operational_scope_system_names",
+      "scope_apps": "operational_scope_app_ids",
+      "actor": "notice_actor_identifier",
+      "related_situation": "operational_situation_slug",
+      "severity_hint": "notice_severity_hint",
+      "expires_at": "notice_event_expires_at_text",
+      "created_at": "notice_record_created_at",
+      "links_kanban": "related_work_card_slugs",
+      "links_brain": "related_knowledge_record_slugs"
+    },
+    "Situation": {
+      "slug": "operational_situation_slug",
+      "title": "operational_situation_title",
+      "summary": "operational_situation_summary",
+      "status": "operational_situation_status",
+      "severity": "operational_situation_severity",
+      "scope_systems": "operational_scope_system_names",
+      "scope_repos": "operational_scope_repository_names",
+      "scope_routines": "operational_scope_routine_names",
+      "scope_automations": "operational_scope_automation_ids",
+      "current_phase": "operational_current_phase_id",
+      "phases_json": "operational_phase_list_json",
+      "blocked_actions": "operational_blocked_action_names",
+      "allowed_actions": "operational_allowed_action_names",
+      "requires_human_clearance": "operational_approval_required_action_names",
+      "preflight_message": "operational_preflight_message",
+      "links_kanban": "related_work_card_slugs",
+      "links_brain": "related_knowledge_record_slugs",
+      "owner": "operational_situation_owner_identifier",
+      "created_at": "operational_situation_created_at",
+      "updated_at": "operational_situation_updated_at",
+      "expires_at": "operational_situation_expires_at_text"
+    },
+    "SituationAdminSnapshot": {
+      "slug": "operational_snapshot_id",
+      "captured_at": "snapshot_captured_at",
+      "posture_count": "operational_posture_count_decimal_text",
+      "notice_count": "notice_event_count_decimal_text",
+      "posture_json": "operational_posture_summary_list_json",
+      "notices_json": "notice_event_summary_list_json",
+      "schema_hashes_json": "operational_snapshot_schema_hashes_json"
+    },
+    "SituationAdminPosture": {
+      "slug": "operational_situation_slug",
+      "severity": "operational_situation_severity",
+      "status": "operational_situation_status",
+      "summary": "operational_situation_summary",
+      "blocked_actions": "operational_blocked_action_list_json",
+      "updated_at": "operational_posture_summary_captured_at"
+    },
+    "SituationAdminNotice": {
+      "slug": "notice_event_slug",
+      "kind": "notice_event_kind",
+      "at": "notice_event_occurred_at",
+      "title": "notice_event_title",
+      "summary": "notice_event_summary",
+      "systems": "notice_scope_system_names_csv",
+      "updated_at": "notice_summary_captured_at"
+    }
+  }
+}

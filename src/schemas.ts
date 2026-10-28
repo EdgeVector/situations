@@ -1,8 +1,8 @@
 export const OWNER_APP_ID = "fsituations";
 
-export type FieldType = "String" | { Array: "String" };
+export type FieldType = "String" | "DateTime" | { Array: "String" };
 
-type SchemaDefinition = {
+export type SchemaDefinition = {
   name: string;
   owner_app_id: string;
   descriptive_name: string;

@@ -456,3 +456,19 @@ reads the entries (drift is read from the records, see rule 4); the NEW `put`
 stops writing the blob, so an old preflight misses situations put by the new
 binary. No other reader exists (last-stack, routines, fkanban, loom, brain and
 lastdb were searched). Flip once and do not run both.
+
+## Standard canonical vocabulary
+
+`src/canonical-fields.json` defines 53 standard concepts for the five operational schemas and three status publication schemas.
+Publication uses their exact names, descriptions, types, and versions.
+The command interface keeps its local names.
+Exact-schema maps translate projections, mutations, batches, and schema metadata.
+Delivery field selections use the same canonical vocabulary.
+Record values, keys, cursors, and JSON payloads remain intact.
+
+Fresh-home init submits canonical definitions through normal schema declarations.
+The schema service checks names, definitions, types, and concept reuse for every caller.
+No special vocabulary key or operator approval path exists.
+Existing configs without field maps retain legacy definitions and data identities.
+Init does not migrate those values.
+Full timestamps use `DateTime`; optional expiration dates and decimal counts keep explicit text definitions.

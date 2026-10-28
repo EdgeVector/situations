@@ -1,3 +1,5 @@
+import { profilesFor } from "./canonical-vocabulary.ts";
+import type { FieldAliasProfiles } from "./field-alias-transport.ts";
 import { FsituationsError, type NodeClient } from "./client.ts";
 import {
   OWNER_APP_ID,
@@ -31,13 +33,15 @@ const TARGETS: SchemaTarget[] = [
  */
 export async function resolveOrDeclareSchemaHashes(
   node: NodeClient,
-  opts: { quiet?: boolean } = {},
+  opts: { quiet?: boolean; canonicalVocabulary?: boolean } = {},
 ): Promise<Partial<Record<RecordType, string>>> {
   const hashes: Partial<Record<RecordType, string>> = {};
-  for (const target of TARGETS) {
-    const hash = await resolveOrDeclareOne(node, target, opts);
+  const loaded = await node.listSchemas();
+  await Promise.all(TARGETS.map(async (target) => {
+    const existing = opts.canonicalVocabulary ? null : pickLoadedHash(loaded,target);
+    const hash = existing ?? await resolveOrDeclareOne(node,target,opts);
     if (hash) hashes[target.key] = hash;
-  }
+  }));
   return hashes;
 }
 
@@ -48,10 +52,8 @@ export async function resolveOrDeclareSchemaHashes(
 async function resolveOrDeclareOne(
   node: NodeClient,
   target: SchemaTarget,
-  opts: { quiet?: boolean } = {},
+  opts: { quiet?: boolean; canonicalVocabulary?: boolean } = {},
 ): Promise<string | null> {
-  const existing = await resolveLoadedHash(node, target);
-  if (existing) return existing;
   try {
     const declared = await node.declareAppSchema(
       OWNER_APP_ID,
@@ -117,4 +119,8 @@ function pickLoadedHash(loaded: LoadedSchemas, target: SchemaTarget, strict = fa
   // A reader or writer needs a schema with every field; only `init` accepts a partial match.
   if (strict) return full?.name ?? null;
   return full?.name ?? candidates[0]?.name ?? null;
+}
+
+export function canonicalProfilesForHashes(hashes: Record<string,string>): FieldAliasProfiles {
+  return Object.assign({},...TARGETS.map((target) => profilesFor(target.schema.schema,[hashes[target.key] ?? "",`${OWNER_APP_ID}/${target.schema.schema.name}`])));
 }

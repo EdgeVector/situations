@@ -1,3 +1,4 @@
+import { parseFieldAliases, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,6 +8,7 @@ import type { RecordType } from "./schemas.ts";
 export const CONFIG_VERSION = 1;
 
 export type Config = {
+  schemaFieldAliases?: FieldAliasProfiles;
   configVersion: number;
   nodeUrl: string;
   schemaServiceUrl: string;
@@ -126,6 +128,7 @@ function assertConfigShape(path: string, raw: unknown): Config {
   const nodeSocketPath =
     typeof r.nodeSocketPath === "string" && r.nodeSocketPath.length > 0 ? r.nodeSocketPath : undefined;
   return {
+    schemaFieldAliases:configFieldAliases(path, r.schemaFieldAliases),
     configVersion: typeof r.configVersion === "number" ? r.configVersion : CONFIG_VERSION,
     nodeUrl: r.nodeUrl as string,
     schemaServiceUrl,
@@ -133,4 +136,22 @@ function assertConfigShape(path: string, raw: unknown): Config {
     schemaHashes,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
+}
+
+function configFieldAliases(path: string, input: unknown): FieldAliasProfiles | undefined {
+  try { return parseFieldAliases(input); }
+  catch (error) {
+    throw new ConfigInvalidError(path, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Init recovers the vocabulary mode from the node if the old config is invalid.
+ * Other commands still use readConfig and fail on invalid configuration.
+ */
+export function readConfigForInit(path: string = defaultConfigPath()): Config | null {
+  try { return readConfig(path); }
+  catch (error) {
+    if (error instanceof ConfigMissingError || error instanceof ConfigInvalidError) return null;
+    throw error;
+  }
 }

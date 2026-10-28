@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { canonicalSchema } from "./canonical-vocabulary.ts";
+import { canonicalProfilesForHashes } from "./init-schema.ts";
 
 import { parseArgs } from "node:util";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
@@ -14,6 +16,7 @@ import {
   defaultConfigPath,
   resolveSocketPath,
   writeConfig,
+  readConfigForInit,
   type Config,
 } from "./config.ts";
 import { loadCtx } from "./context.ts";
@@ -56,6 +59,7 @@ import {
 } from "./publish-status.ts";
 import { runDoctor } from "./doctor.ts";
 import {
+  OWNER_APP_ID,
   indexEntrySchema,
   indexSchema,
   noticeHistorySchema,
@@ -473,19 +477,20 @@ function schemaCmd(rest: string[]): number {
     return 0;
   }
   const type = (parsed.values.type ?? "all").toLowerCase();
+  const publication = (request: typeof situationSchema) => ({...request,schema:canonicalSchema(request.schema)});
   let payload: unknown;
-  if (type === "situation") payload = situationSchema;
-  else if (type === "notice") payload = noticeSchema;
-  else if (type === "index") payload = indexSchema;
-  else if (type === "index_entry" || type === "index-entry") payload = indexEntrySchema;
-  else if (type === "notice_history" || type === "notice-history") payload = noticeHistorySchema;
+  if (type === "situation") payload = publication(situationSchema);
+  else if (type === "notice") payload = publication(noticeSchema);
+  else if (type === "index") payload = publication(indexSchema);
+  else if (type === "index_entry" || type === "index-entry") payload = publication(indexEntrySchema);
+  else if (type === "notice_history" || type === "notice-history") payload = publication(noticeHistorySchema);
   else if (type === "all") {
     payload = {
-      situation: situationSchema,
-      notice: noticeSchema,
-      index: indexSchema,
-      index_entry: indexEntrySchema,
-      notice_history: noticeHistorySchema,
+      situation: publication(situationSchema),
+      notice: publication(noticeSchema),
+      index: publication(indexSchema),
+      index_entry: publication(indexEntrySchema),
+      notice_history: publication(noticeHistorySchema),
     };
   } else {
     throw new FsituationsError({
@@ -523,12 +528,12 @@ async function initCmd(rest: string[]): Promise<number> {
   const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];
   const userHash = parsed.values["user-hash"] ?? "";
-  const node = newNodeClient({
+  const probe = newNodeClient({
     baseUrl: nodeUrl,
     userHash,
     socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
   });
-  const identity = userHash ? { provisioned: true as const, userHash } : await node.autoIdentity();
+  const identity = userHash ? { provisioned: true as const, userHash } : await probe.autoIdentity();
   if (!identity.provisioned) {
     throw new FsituationsError({
       code: "missing_identity",
@@ -537,8 +542,15 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
+  const existing = readConfigForInit(cfgPath);
+  const before = existing ? [] : await probe.listSchemas();
+  const canonicalVocabulary = existing ? Boolean(existing.schemaFieldAliases)
+    : !before.some((schema) => schema.owner_app_id === OWNER_APP_ID && schema.fields.some((field) => ["slug","key","ie_h","nh_h"].includes(field)));
+  const node = newNodeClient({baseUrl:nodeUrl,userHash:identity.userHash,
+    socketPath:resolveSocketPath(nodeSocketPath ? {nodeSocketPath} : undefined),
+    schemaFieldAliases:existing?.schemaFieldAliases,canonicalVocabulary});
   const declared = await resolveOrDeclareSchemaHashes(node, {
-    quiet: Boolean(parsed.values.json),
+    quiet: Boolean(parsed.values.json), canonicalVocabulary,
   });
   const situationHash = parsed.values["schema-hash"] ?? declared.situation;
   const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
@@ -560,12 +572,17 @@ async function initCmd(rest: string[]): Promise<number> {
   if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
   if (noticeHistoryHash) schemaHashes.notice_history = noticeHistoryHash;
 
+  if (canonicalVocabulary && ((parsed.values["schema-hash"] && situationHash !== declared.situation) ||
+      (parsed.values["notice-schema-hash"] && noticeHash !== declared.notice))) {
+    throw new FsituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
+  }
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
     nodeUrl,
     schemaServiceUrl: parsed.values["schema-service-url"] ?? "",
     userHash: identity.userHash,
     schemaHashes,
+    schemaFieldAliases:canonicalVocabulary ? canonicalProfilesForHashes(schemaHashes) : undefined,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath);
@@ -575,7 +592,7 @@ async function initCmd(rest: string[]): Promise<number> {
   if (indexEntryHash && noticeHistoryHash) {
     try {
       const seedNode = newNodeClient({
-        baseUrl: nodeUrl,
+        baseUrl: nodeUrl, schemaFieldAliases:cfg.schemaFieldAliases,
         userHash: identity.userHash,
         socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
       });

@@ -466,7 +466,9 @@ Exact-schema maps translate projections, mutations, batches, and schema metadata
 Delivery field selections use the same canonical vocabulary.
 Record values, keys, cursors, and JSON payloads remain intact.
 
-Fresh-home init selects canonical definitions after operator approval in the schema service.
+Fresh-home init submits canonical definitions through normal schema declarations.
+The schema service checks names, definitions, types, and concept reuse for every caller.
+No special vocabulary key or operator approval path exists.
 Existing configs without field maps retain legacy definitions and data identities.
 Init does not migrate those values.
 Full timestamps use `DateTime`; optional expiration dates and decimal counts keep explicit text definitions.

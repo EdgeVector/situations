@@ -1,3 +1,4 @@
+import { parseFieldAliases, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,6 +8,7 @@ import type { RecordType } from "./schemas.ts";
 export const CONFIG_VERSION = 1;
 
 export type Config = {
+  schemaFieldAliases?: FieldAliasProfiles;
   configVersion: number;
   nodeUrl: string;
   schemaServiceUrl: string;
@@ -126,6 +128,7 @@ function assertConfigShape(path: string, raw: unknown): Config {
   const nodeSocketPath =
     typeof r.nodeSocketPath === "string" && r.nodeSocketPath.length > 0 ? r.nodeSocketPath : undefined;
   return {
+    schemaFieldAliases:parseFieldAliases(r.schemaFieldAliases),
     configVersion: typeof r.configVersion === "number" ? r.configVersion : CONFIG_VERSION,
     nodeUrl: r.nodeUrl as string,
     schemaServiceUrl,
@@ -133,4 +136,9 @@ function assertConfigShape(path: string, raw: unknown): Config {
     schemaHashes,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
+}
+
+export function tryReadConfig(path: string = defaultConfigPath()): Config | null {
+  try { return readConfig(path); }
+  catch (error) { if (error instanceof ConfigMissingError) return null; throw error; }
 }

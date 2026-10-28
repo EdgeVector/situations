@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { canonicalProfilesForHashes } from "./init-schema.ts";
 
 import { parseArgs } from "node:util";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
@@ -14,6 +15,7 @@ import {
   defaultConfigPath,
   resolveSocketPath,
   writeConfig,
+  tryReadConfig,
   type Config,
 } from "./config.ts";
 import { loadCtx } from "./context.ts";
@@ -56,6 +58,7 @@ import {
 } from "./publish-status.ts";
 import { runDoctor } from "./doctor.ts";
 import {
+  OWNER_APP_ID,
   indexEntrySchema,
   indexSchema,
   noticeHistorySchema,
@@ -523,12 +526,12 @@ async function initCmd(rest: string[]): Promise<number> {
   const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];
   const userHash = parsed.values["user-hash"] ?? "";
-  const node = newNodeClient({
+  const probe = newNodeClient({
     baseUrl: nodeUrl,
     userHash,
     socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
   });
-  const identity = userHash ? { provisioned: true as const, userHash } : await node.autoIdentity();
+  const identity = userHash ? { provisioned: true as const, userHash } : await probe.autoIdentity();
   if (!identity.provisioned) {
     throw new FsituationsError({
       code: "missing_identity",
@@ -537,8 +540,15 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
+  const existing = tryReadConfig(cfgPath);
+  const before = existing ? [] : await probe.listSchemas();
+  const canonicalVocabulary = existing ? Boolean(existing.schemaFieldAliases)
+    : !before.some((schema) => schema.owner_app_id === OWNER_APP_ID && schema.fields.some((field) => ["slug","key","ie_h","nh_h"].includes(field)));
+  const node = newNodeClient({baseUrl:nodeUrl,userHash:identity.userHash,
+    socketPath:resolveSocketPath(nodeSocketPath ? {nodeSocketPath} : undefined),
+    schemaFieldAliases:existing?.schemaFieldAliases,canonicalVocabulary});
   const declared = await resolveOrDeclareSchemaHashes(node, {
-    quiet: Boolean(parsed.values.json),
+    quiet: Boolean(parsed.values.json), canonicalVocabulary,
   });
   const situationHash = parsed.values["schema-hash"] ?? declared.situation;
   const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
@@ -560,12 +570,17 @@ async function initCmd(rest: string[]): Promise<number> {
   if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
   if (noticeHistoryHash) schemaHashes.notice_history = noticeHistoryHash;
 
+  if (canonicalVocabulary && ((parsed.values["schema-hash"] && situationHash !== declared.situation) ||
+      (parsed.values["notice-schema-hash"] && noticeHash !== declared.notice))) {
+    throw new FsituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
+  }
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
     nodeUrl,
     schemaServiceUrl: parsed.values["schema-service-url"] ?? "",
     userHash: identity.userHash,
     schemaHashes,
+    schemaFieldAliases:canonicalVocabulary ? canonicalProfilesForHashes(schemaHashes) : undefined,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath);
@@ -575,7 +590,7 @@ async function initCmd(rest: string[]): Promise<number> {
   if (indexEntryHash && noticeHistoryHash) {
     try {
       const seedNode = newNodeClient({
-        baseUrl: nodeUrl,
+        baseUrl: nodeUrl, schemaFieldAliases:cfg.schemaFieldAliases,
         userHash: identity.userHash,
         socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
       });

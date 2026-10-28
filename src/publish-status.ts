@@ -1,3 +1,4 @@
+import { canonicalSchema } from "./canonical-vocabulary.ts";
 // Privacy-safe situations posture+notices publisher + LastDB deliver dogfood.
 //
 // Mirrors EdgeVector/routines `src/publish-status.ts`:
@@ -289,6 +290,7 @@ export async function deliverPostureStatus(
     schemaHashes: publication.schemaHashes,
     recipient: options.recipient,
     maxRecords: options.maxRecords,
+    canonicalVocabulary:Boolean(options.cfg?.schemaFieldAliases) || options.node?.canonicalVocabulary === true,
   });
 
   if (options.dryRun || publication.dryRun) {
@@ -311,8 +313,11 @@ export function buildDeliveryStageRequest(opts: {
   schemaHashes: Record<SchemaKey, string>;
   recipient: DeliveryRecipient;
   maxRecords?: number;
+  canonicalVocabulary?: boolean;
 }): DeliveryStageRequest {
   const maxRecords = positiveInt(opts.maxRecords, DEFAULT_MAX_RECORDS);
+  const fieldsFor = (key: SchemaKey, fields: readonly string[]) => opts.canonicalVocabulary
+    ? canonicalSchema(SCHEMAS[key]).fields : [...fields];
   return {
     recipient_pubkey: opts.recipient.recipientPubkey,
     ...(opts.recipient.recipientDisplayName
@@ -325,16 +330,16 @@ export function buildDeliveryStageRequest(opts: {
     legs: [
       {
         schema_name: opts.schemaHashes.snapshot,
-        fields: [...SNAPSHOT_FIELDS],
+        fields: fieldsFor("snapshot",SNAPSHOT_FIELDS),
         hash_keys: [SNAPSHOT_SLUG],
       },
       {
         schema_name: opts.schemaHashes.posture,
-        fields: [...POSTURE_FIELDS],
+        fields: fieldsFor("posture",POSTURE_FIELDS),
       },
       {
         schema_name: opts.schemaHashes.notice,
-        fields: [...NOTICE_SLIM_FIELDS],
+        fields: fieldsFor("notice",NOTICE_SLIM_FIELDS),
       },
     ],
   };

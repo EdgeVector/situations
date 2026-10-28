@@ -1,3 +1,6 @@
+import { canonicalSchema, profilesFor } from "./canonical-vocabulary.ts";
+import { fieldAliasTransport, encodeFieldRequest, decodeFieldReply, localSchemaMetadata, type FieldAliasProfiles } from "./field-alias-transport.ts";
+import type { SchemaDefinition } from "./schemas.ts";
 // LastDB node client for fsituations.
 //
 // As of the @lastdb/app-sdk port, the app DATA PLANE rides the SDK's
@@ -103,6 +106,7 @@ type AppSchemaDeclaration = {
 };
 
 export type NodeClient = {
+  readonly canonicalVocabulary?: boolean;
   baseUrl: string;
   userHash: string;
   autoIdentity(): Promise<
@@ -164,12 +168,16 @@ const noopCapabilityStore: SdkCapabilityStore = {
 };
 
 export function newNodeClient(opts: {
+  schemaFieldAliases?: FieldAliasProfiles;
+  canonicalVocabulary?: boolean;
   baseUrl: string;
   userHash: string;
   verbose?: Verbose;
   timeoutMs?: number;
   socketPath?: string;
 }): NodeClient {
+  const fieldProfiles: FieldAliasProfiles = {...opts.schemaFieldAliases};
+  const canonicalVocabulary = opts.canonicalVocabulary ?? Boolean(opts.schemaFieldAliases);
   const baseUrl = stripTrailingSlash(opts.baseUrl);
   const verbose = opts.verbose ?? noopVerbose;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -206,7 +214,7 @@ export function newNodeClient(opts: {
   const client = (): LastDbClient => {
     if (sdk === null) {
       const transport: SdkTransport = gatedTransport(
-        chooseTransport(baseUrl, socketPath, headers()),
+        fieldAliasTransport(chooseTransport(baseUrl, socketPath, headers()),fieldProfiles),
         requireNodeApiVersion,
       );
       sdk = new LastDbClient(
@@ -232,13 +240,13 @@ export function newNodeClient(opts: {
       baseUrl,
       method,
       path,
-      body,
+      body:encodeFieldRequest(path,body,fieldProfiles),
       headers: headers(),
       socketPath,
       timeoutMs,
       verbose,
     });
-    return { status: res.status, body: parseBody(text) };
+    return { status: res.status, body: decodeFieldReply(path,body,parseBody(text),fieldProfiles) };
   }
 
   async function mutate(
@@ -261,7 +269,19 @@ export function newNodeClient(opts: {
     }
   }
 
+  let canonicalReadiness: Promise<void> | undefined;
+  const requireCanonicalHome = (): Promise<void> => canonicalReadiness ??= (async () => {
+    const {status,body} = await callJson("GET","/api/schemas");
+    if (status !== 200) throw mapNodeError(status,body,"/api/schemas");
+    const catalog = body as Record<string,unknown>;
+    if (!Array.isArray(catalog.schemas)) throw new FsituationsError({code:"schema_catalog_invalid",message:"Cannot confirm the local schema format before declaration."});
+    if (catalog.schemas.some((item) => item && typeof item === "object" && item.owner_app_id === OWNER_APP_ID && Array.isArray(item.fields) && item.fields.some((field:unknown) => ["slug","key","ie_h","nh_h"].includes(String(field))))) {
+      throw new FsituationsError({code:"canonical_migration_required",message:"This home uses legacy operational fields. An explicit data migration is required before canonical schema publication."});
+    }
+  })();
+
   return {
+    canonicalVocabulary,
     baseUrl,
     userHash: opts.userHash,
     nodeVersion() {
@@ -293,16 +313,23 @@ export function newNodeClient(opts: {
           : [];
       return raw
         .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
-        .map((schema) => ({
+        .map((item) => {
+          const schema = localSchemaMetadata(item,fieldProfiles);
+          return ({
           name: stringField(schema, "name"),
           descriptive_name: stringField(schema, "descriptive_name"),
           owner_app_id: stringField(schema, "owner_app_id"),
           fields: Array.isArray(schema.fields)
             ? schema.fields.filter((field): field is string => typeof field === "string")
             : [],
-        }));
+        }); });
     },
     async declareAppSchema(appId, schema) {
+      const local = schema as unknown as SchemaDefinition;
+      if (canonicalVocabulary) {
+        await requireCanonicalHome();
+        schema = canonicalSchema(local) as unknown as Record<string,unknown>;
+      }
       const { status, body } = await callJson("POST", "/api/apps/declare-schema", {
         app_id: appId,
         schema,
@@ -320,6 +347,7 @@ export function newNodeClient(opts: {
           hint: "Upgrade the node or inspect the app-schema declaration response.",
         });
       }
+      if (canonicalVocabulary) Object.assign(fieldProfiles,profilesFor(local,[canonical,schemaName]));
       return {
         app_id: typeof b.app_id === "string" ? b.app_id : appId,
         schema: schemaName,

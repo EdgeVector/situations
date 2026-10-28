@@ -9,7 +9,7 @@ export type Ctx = {
 export function loadCtx(opts: { configPath?: string; verbose?: Verbose } = {}): Ctx {
   const cfg = readConfig(opts.configPath);
   const node = newNodeClient({
-    baseUrl: cfg.nodeUrl,
+    baseUrl: cfg.nodeUrl, schemaFieldAliases:cfg.schemaFieldAliases,
     userHash: cfg.userHash,
     verbose: opts.verbose,
     socketPath: resolveSocketPath(cfg),

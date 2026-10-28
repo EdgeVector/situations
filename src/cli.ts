@@ -16,7 +16,7 @@ import {
   defaultConfigPath,
   resolveSocketPath,
   writeConfig,
-  tryReadConfig,
+  readConfigForInit,
   type Config,
 } from "./config.ts";
 import { loadCtx } from "./context.ts";
@@ -542,7 +542,7 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
-  const existing = tryReadConfig(cfgPath);
+  const existing = readConfigForInit(cfgPath);
   const before = existing ? [] : await probe.listSchemas();
   const canonicalVocabulary = existing ? Boolean(existing.schemaFieldAliases)
     : !before.some((schema) => schema.owner_app_id === OWNER_APP_ID && schema.fields.some((field) => ["slug","key","ie_h","nh_h"].includes(field)));

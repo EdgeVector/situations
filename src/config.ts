@@ -128,7 +128,7 @@ function assertConfigShape(path: string, raw: unknown): Config {
   const nodeSocketPath =
     typeof r.nodeSocketPath === "string" && r.nodeSocketPath.length > 0 ? r.nodeSocketPath : undefined;
   return {
-    schemaFieldAliases:parseFieldAliases(r.schemaFieldAliases),
+    schemaFieldAliases:configFieldAliases(path, r.schemaFieldAliases),
     configVersion: typeof r.configVersion === "number" ? r.configVersion : CONFIG_VERSION,
     nodeUrl: r.nodeUrl as string,
     schemaServiceUrl,
@@ -138,7 +138,20 @@ function assertConfigShape(path: string, raw: unknown): Config {
   };
 }
 
-export function tryReadConfig(path: string = defaultConfigPath()): Config | null {
+function configFieldAliases(path: string, input: unknown): FieldAliasProfiles | undefined {
+  try { return parseFieldAliases(input); }
+  catch (error) {
+    throw new ConfigInvalidError(path, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Init recovers the vocabulary mode from the node if the old config is invalid.
+ * Other commands still use readConfig and fail on invalid configuration.
+ */
+export function readConfigForInit(path: string = defaultConfigPath()): Config | null {
   try { return readConfig(path); }
-  catch (error) { if (error instanceof ConfigMissingError) return null; throw error; }
+  catch (error) {
+    if (error instanceof ConfigMissingError || error instanceof ConfigInvalidError) return null;
+    throw error;
+  }
 }

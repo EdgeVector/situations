@@ -267,7 +267,7 @@ async function snapshot(
           filter: { HashKey: hash },
           pageSize: 17,
         });
-        const actual = rows.results.map((row) => stable(row.key)).sort();
+        const actual = rows.results.map((row) => stable(row.key));
         const expected = records
           .filter((record) => record.key.hash === hash)
           .map((record) => stable(record.key))
@@ -307,6 +307,16 @@ async function checkLists(
       rows.map((row: any) => row.slug).sort(),
       expected,
     ), "The actual app list membership differs.");
+    for (const row of rows) {
+      const written =
+        members[cfg.schemaHashes[type]!]![
+          stable({ hash: row.slug, range: null })
+        ];
+      require(written &&
+        row.summary ===
+          written.fields
+            .summary, "An actual app list returns a stale source summary.");
+    }
   }
 }
 
@@ -508,6 +518,13 @@ async function runMeasure(): Promise<void> {
     require(activeRows.length === count &&
       new Set(activeRows.map((row: any) => row.slug)).size ===
         count, "The active list is incomplete.");
+    require(activeRows.find((row) => row.slug === slug("situation", key))
+      ?.summary ===
+      summary(
+        "situation",
+        key,
+        1,
+      ), "The timed active list returns a stale update.");
     await measure("publication", () => publish(node, cfg, active, count));
   }
   await checkLists(node, cfg, active, count);

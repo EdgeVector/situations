@@ -364,6 +364,8 @@ export async function convertSchemaValues(
             return String(source.name);
           })
           .sort();
+  if (retire.length && capabilities.app_schema_alias_retirement_v1 !== true)
+    fail("alias retirement needs app_schema_alias_retirement_v1 before the request pause.");
   const schemas: Request[] = selected.map(
     ({ source, definition, local, canonical, member }) => ({
       schema: String(source.name),

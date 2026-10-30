@@ -463,6 +463,11 @@ export async function convertSchemaValues(
       fail("a different saved conversion scope requires owner review.");
     scopeRaw = durableScope(scopePath, scope, scopeRaw);
     saved = scope;
+    if (
+      readFileSync(configPath, "utf8") !== initial ||
+      readFileSync(scopePath, "utf8") !== scopeRaw
+    )
+      fail("the config or scope changed before the node request pause.");
     report = receipt(
       await request(node, "POST", ROUTE, {
         action: "app_begin",
@@ -519,7 +524,15 @@ export async function convertSchemaValues(
         )
           fail("the published schema differs.");
       });
-      writeConfig(target, configPath, readFileSync(configPath, "utf8"));
+      const current = readFileSync(configPath, "utf8");
+      if (
+        readFileSync(scopePath, "utf8") !== scopeRaw ||
+        ![saved.source_config_sha256, saved.target_config_sha256].includes(
+          sha(current),
+        )
+      )
+        fail("the config or scope changed before the final config write.");
+      writeConfig(target, configPath, current);
       action = "app_finish";
     } else if (report.phase === "complete" || report.phase === "aborted") {
       removeScope(scopePath, scopeRaw);

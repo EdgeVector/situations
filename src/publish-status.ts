@@ -25,6 +25,7 @@ import {
   type Situation,
 } from "./record.ts";
 import { publicationSchemas as SCHEMAS, SNAPSHOT_FIELDS, POSTURE_FIELDS, NOTICE_SLIM_FIELDS } from "./publication-schemas.ts";
+import { commitOps } from "./index-entry.ts";
 
 export const SNAPSHOT_SLUG = "posture-latest";
 const DEFAULT_MAX_RECORDS = 50;
@@ -210,11 +211,7 @@ export async function publishPostureStatus(
   ];
   // Native update is an upsert. Collect the independent writes without point-read probes.
   const writes=records.map(({schemaHash,keyHash,fields})=>({schemaHash,keyHash,fields,mutationType:"update" as const}));
-  for(let start=0;start<writes.length;start+=256){
-    const chunks=[];
-    for(let offset=start;offset<Math.min(start+256,writes.length);offset+=64)chunks.push(writes.slice(offset,offset+64));
-    await Promise.all(chunks.map((batch)=>node.mutateBatch(batch)));
-  }
+  await commitOps(node,writes);
 
   return {
     ...publication,

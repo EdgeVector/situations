@@ -1,3 +1,5 @@
+import { APP_SCHEMAS } from "./schema-layout.ts";
+import { requireOwnedHome } from "./schema-mode.ts";
 import { profilesFor } from "./canonical-vocabulary.ts";
 import type { FieldAliasProfiles } from "./field-alias-transport.ts";
 import { FsituationsError, type NodeClient } from "./client.ts";
@@ -6,70 +8,54 @@ import {
   indexEntrySchema,
   indexSchema,
   noticeHistorySchema,
-  noticeSchema,
   situationSchema,
   type AddSchemaRequest,
-  type RecordType,
 } from "./schemas.ts";
 
 type SchemaTarget = {
-  key: RecordType;
+  key: string;
   schema: AddSchemaRequest;
 };
 
-const TARGETS: SchemaTarget[] = [
-  { key: "situation", schema: situationSchema },
-  { key: "notice", schema: noticeSchema },
-  { key: "index", schema: indexSchema },
-  { key: "index_entry", schema: indexEntrySchema },
-  { key: "notice_history", schema: noticeHistorySchema },
-];
+const TARGETS: SchemaTarget[] = APP_SCHEMAS.map(({ key, definition }) => ({
+  key,
+  schema: { schema: definition, mutation_mappers: {} },
+}));
 
-/**
- * Prefer already-loaded registered schemas; otherwise ask Mini to resolve or
- * register them with Schema Service via POST /api/apps/declare-schema (the
- * same first-run path as brain/kanban). There is no local-only fallback.
- * Returns a map of record-type → canonical hash for config pin.
- */
+/** Explicit setup checks the whole app before it declares eight owned schemas. */
 export async function resolveOrDeclareSchemaHashes(
   node: NodeClient,
   opts: { quiet?: boolean; canonicalVocabulary?: boolean } = {},
-): Promise<Partial<Record<RecordType, string>>> {
-  const hashes: Partial<Record<RecordType, string>> = {};
-  const loaded = await node.listSchemas();
-  await Promise.all(TARGETS.map(async (target) => {
-    const existing = opts.canonicalVocabulary ? null : pickLoadedHash(loaded,target);
-    const hash = existing ?? await resolveOrDeclareOne(node,target,opts);
-    if (hash) hashes[target.key] = hash;
-  }));
-  return hashes;
-}
-
-/**
- * Resolve one schema's canonical hash, declaring it when the node has not
- * loaded it. Returns null when the node has no declare route (older nodes).
- */
-async function resolveOrDeclareOne(
-  node: NodeClient,
-  target: SchemaTarget,
-  opts: { quiet?: boolean; canonicalVocabulary?: boolean } = {},
-): Promise<string | null> {
-  try {
-    const declared = await node.declareAppSchema(
-      OWNER_APP_ID,
-      target.schema.schema as unknown as Record<string, unknown>,
+): Promise<{
+  schemaHashes: Record<string, string>;
+  schemaIdentities: Record<string, string>;
+}> {
+  const [loaded, version] = await Promise.all([
+    node.listSchemas(),
+    node.rawCall("GET", "/api/version"),
+  ]);
+  if (version.status !== 200)
+    throw new Error(
+      "The selected node did not confirm its schema capabilities.",
     );
-    if (!opts.quiet) {
-      console.log(`registered ${declared.schema} → ${declared.canonical}  (${declared.resolution})`);
-    }
-    return declared.canonical;
-  } catch (err) {
-    // Route missing / method not allowed → leave that key unset.
-    if (err instanceof FsituationsError && (err.code === "http_404" || err.code === "http_405")) {
-      return null;
-    }
-    throw err;
-  }
+  requireOwnedHome({ ready: true, schemas: loaded }, version.body);
+  const schemaHashes: Record<string, string> = {};
+  const schemaIdentities: Record<string, string> = {};
+  await Promise.all(
+    TARGETS.map(async (target) => {
+      const declared = await node.declareAppSchema(
+        OWNER_APP_ID,
+        target.schema.schema as unknown as Record<string, unknown>,
+      );
+      schemaHashes[target.key] = declared.canonical;
+      schemaIdentities[target.key] = declared.identity;
+      if (!opts.quiet)
+        console.log(
+          `registered ${declared.schema} → ${declared.canonical} (${declared.resolution})`,
+        );
+    }),
+  );
+  return { schemaHashes, schemaIdentities };
 }
 
 /**
@@ -82,17 +68,29 @@ async function resolveOrDeclareOne(
  */
 export async function resolveLoadedLayoutHashes(
   node: NodeClient,
-): Promise<{ index: string | null; index_entry: string | null; notice_history: string | null }> {
+): Promise<{
+  index: string | null;
+  index_entry: string | null;
+  notice_history: string | null;
+}> {
   const loaded = await node.listSchemas();
   return {
     // The legacy Index schema: loaded when any schema of ours carries its name.
     index: pickLoadedHash(loaded, { key: "index", schema: indexSchema }),
-    index_entry: pickLoadedHash(loaded, { key: "index_entry", schema: indexEntrySchema }, true),
-    notice_history: pickLoadedHash(loaded, { key: "notice_history", schema: noticeHistorySchema }, true),
+    index_entry: pickLoadedHash(loaded, {
+      key: "index_entry",
+      schema: indexEntrySchema,
+    }),
+    notice_history: pickLoadedHash(loaded, {
+      key: "notice_history",
+      schema: noticeHistorySchema,
+    }),
   };
 }
 
-export async function resolveLoadedSituationHash(node: NodeClient): Promise<string | null> {
+export async function resolveLoadedSituationHash(
+  node: NodeClient,
+): Promise<string | null> {
   return resolveLoadedHash(node, { key: "situation", schema: situationSchema });
 }
 
@@ -105,10 +103,14 @@ async function resolveLoadedHash(
 
 type LoadedSchemas = Awaited<ReturnType<NodeClient["listSchemas"]>>;
 
-function pickLoadedHash(loaded: LoadedSchemas, target: SchemaTarget, strict = false): string | null {
+function pickLoadedHash(
+  loaded: LoadedSchemas,
+  target: SchemaTarget,
+): string | null {
   const candidates = loaded.filter(
     (schema) =>
       schema.owner_app_id === OWNER_APP_ID &&
+      schema.independent_fields === true &&
       schema.descriptive_name === target.schema.schema.descriptive_name,
   );
   const full = candidates.find((schema) =>
@@ -116,11 +118,20 @@ function pickLoadedHash(loaded: LoadedSchemas, target: SchemaTarget, strict = fa
   );
   // Prefer descriptive identity match; name may be the namespaced string or the
   // canonical hash depending on node version.
-  // A reader or writer needs a schema with every field; only `init` accepts a partial match.
-  if (strict) return full?.name ?? null;
-  return full?.name ?? candidates[0]?.name ?? null;
+  // A reader or writer requires complete fields and an owned runtime schema.
+  return full?.name ?? null;
 }
 
-export function canonicalProfilesForHashes(hashes: Record<string,string>): FieldAliasProfiles {
-  return Object.assign({},...TARGETS.map((target) => profilesFor(target.schema.schema,[hashes[target.key] ?? "",`${OWNER_APP_ID}/${target.schema.schema.name}`])));
+export function canonicalProfilesForHashes(
+  hashes: Record<string, string>,
+): FieldAliasProfiles {
+  return Object.assign(
+    {},
+    ...TARGETS.map((target) =>
+      profilesFor(target.schema.schema, [
+        hashes[target.key] ?? "",
+        `${OWNER_APP_ID}/${target.schema.schema.name}`,
+      ]),
+    ),
+  );
 }

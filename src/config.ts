@@ -1,11 +1,12 @@
 import { parseFieldAliases, type FieldAliasProfiles } from "./field-alias-transport.ts";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { RecordType } from "./schemas.ts";
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 export type Config = {
   schemaFieldAliases?: FieldAliasProfiles;
@@ -13,7 +14,9 @@ export type Config = {
   nodeUrl: string;
   schemaServiceUrl: string;
   userHash: string;
+  /** Literal runtime addresses. Definition identities are separate. */
   schemaHashes: Record<string, string>;
+  schemaIdentities?: Record<string,string>;
   nodeSocketPath?: string;
 };
 
@@ -86,13 +89,20 @@ export function readConfig(path: string = defaultConfigPath()): Config {
   return assertConfigShape(path, parsed);
 }
 
-export function writeConfig(config: Config, path: string = defaultConfigPath()): void {
-  mkdirSync(dirname(path), { recursive: true });
-  // Write a sibling temp file, then rename: another situations process reading
-  // this config at the same moment sees the old file or the new one, never half.
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", "utf8");
-  renameSync(tmp, path);
+export function writeConfig(config: Config, path: string = defaultConfigPath(), expected?:string|null): void {
+  mkdirSync(dirname(path),{recursive:true,mode:0o700});
+  const current=existsSync(path)?readFileSync(path,"utf8"):null;
+  if(expected!==undefined && current!==expected) throw new Error("The app config changed during the schema operation.");
+  const temporary=`${path}.${process.pid}.${randomUUID()}.tmp`;
+  const fd=openSync(temporary,"wx",0o600);
+  try { writeFileSync(fd,JSON.stringify(config,null,2)+"\n"); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  try {
+    if(expected!==undefined && (existsSync(path)?readFileSync(path,"utf8"):null)!==expected) throw new Error("The app config changed before publication.");
+    renameSync(temporary,path);
+    const parent=openSync(dirname(path),"r");
+    try {fsyncSync(parent);} finally {closeSync(parent);}
+  } finally { if(existsSync(temporary)) unlinkSync(temporary); }
 }
 
 export function schemaHashFor(type: RecordType, cfg: { schemaHashes: Record<string, string> }): string {
@@ -134,6 +144,7 @@ function assertConfigShape(path: string, raw: unknown): Config {
     schemaServiceUrl,
     userHash: r.userHash as string,
     schemaHashes,
+    schemaIdentities:parseIdentities(path,r.schemaIdentities),
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
 }
@@ -154,4 +165,12 @@ export function readConfigForInit(path: string = defaultConfigPath()): Config | 
     if (error instanceof ConfigMissingError || error instanceof ConfigInvalidError) return null;
     throw error;
   }
+}
+
+function parseIdentities(path:string,input:unknown):Record<string,string>|undefined {
+  if(input===undefined)return undefined;
+  if(!input || typeof input!=="object" || Array.isArray(input) || Object.values(input).some((value)=>typeof value!=="string" || !/^[a-f0-9]{64}$/.test(value))) {
+    throw new ConfigInvalidError(path,"schemaIdentities must contain exact definition identities");
+  }
+  return {...input} as Record<string,string>;
 }

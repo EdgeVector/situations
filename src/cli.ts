@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
+import { convertSchemaValues } from "./schema-conversion.ts";
 import { canonicalSchema } from "./canonical-vocabulary.ts";
 import { canonicalProfilesForHashes } from "./init-schema.ts";
+import { APP_SCHEMAS } from "./schema-layout.ts";
 
 import { parseArgs } from "node:util";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
@@ -58,14 +60,7 @@ import {
   type DeliveryRecipient,
 } from "./publish-status.ts";
 import { runDoctor } from "./doctor.ts";
-import {
-  OWNER_APP_ID,
-  indexEntrySchema,
-  indexSchema,
-  noticeHistorySchema,
-  noticeSchema,
-  situationSchema,
-} from "./schemas.ts";
+import { OWNER_APP_ID } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
 
@@ -78,8 +73,9 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 write ~/.situations/config.json (declares Situation + Notice + Index + IndexEntry + NoticeHistory schemas on Mini)
-  schema               print Situation, Notice, Index, IndexEntry, and/or NoticeHistory schema JSON
+  schema-values-convert  explicitly convert existing schema-owned values
+  init                 declare eight owned schemas and save their runtime addresses
+  schema               print the exact definitions for the eight app record types
   doctor               check the index layout: schemas, legacy copy, drift, unreadable entries (read only)
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
@@ -115,6 +111,8 @@ Compatibility: fsituations remains an alias during the migration.`;
 
 export function usageFor(command: string): string {
   switch (command) {
+    case "schema-values-convert":
+      return "situations schema-values-convert [--apply --maintenance] [--abort] [--config PATH]\nPlan by default. Apply pauses node requests and converts only the exact saved app scope.";
     case "init":
       return `situations init
 
@@ -123,15 +121,14 @@ Options:
   --schema-service-url <url>   schema service URL kept for diagnostics
   --node-socket-path <path>    unix socket path (default ~/.lastdb/data/folddb.sock)
   --user-hash <hash>           user hash; if omitted, asks node /api/auto_identity
-  --schema-hash <hash>         canonical hash for fsituations/Situation (legacy pin)
-  --notice-schema-hash <hash>  canonical hash for fsituations/Notice
+  --schema-hash <hash>         assert the canonical Situation definition identity
+  --notice-schema-hash <hash>  assert the canonical Notice definition identity
   --config <path>              write config path
 
-If hashes are omitted, init asks the node for loaded fsituations schemas. On
-LastDB Mini (POST /api/apps/declare-schema), missing schemas are declared
-through Mini's Schema Service-backed path and the catalog identities are pinned.
-On older nodes without that route, register/load payloads from
-\`situations schema --json\`, then re-run init.`;
+Setup requires owned_app_schemas_v1 and eight registered definitions in schema
+service. It saves the definition identities separately from the runtime addresses.
+Existing shared values require schema-values-convert on a compatible release
+before setup or the engine removal upgrade. No unsupported fallback follows.`;
     case "put":
       return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
@@ -343,6 +340,8 @@ async function main(argv: string[]): Promise<number> {
       return schemaCmd(rest);
     case "init":
       return await initCmd(rest);
+    case "schema-values-convert":
+      return await schemaValuesConvertCmd(rest);
     case "doctor":
       return await doctorCmd(rest);
     case "put":
@@ -476,31 +475,27 @@ function schemaCmd(rest: string[]): number {
     console.log(usageFor("schema"));
     return 0;
   }
-  const type = (parsed.values.type ?? "all").toLowerCase();
-  const publication = (request: typeof situationSchema) => ({...request,schema:canonicalSchema(request.schema)});
-  let payload: unknown;
-  if (type === "situation") payload = publication(situationSchema);
-  else if (type === "notice") payload = publication(noticeSchema);
-  else if (type === "index") payload = publication(indexSchema);
-  else if (type === "index_entry" || type === "index-entry") payload = publication(indexEntrySchema);
-  else if (type === "notice_history" || type === "notice-history") payload = publication(noticeHistorySchema);
-  else if (type === "all") {
-    payload = {
-      situation: publication(situationSchema),
-      notice: publication(noticeSchema),
-      index: publication(indexSchema),
-      index_entry: publication(indexEntrySchema),
-      notice_history: publication(noticeHistorySchema),
-    };
-  } else {
+  const type = (parsed.values.type ?? "all").toLowerCase().replaceAll("-","_");
+  const selected=APP_SCHEMAS.filter((entry)=>type==="all"||entry.key===type);
+  if (!selected.length) {
     throw new FsituationsError({
       code: "invalid_type",
       message: `Unknown --type "${type}".`,
-      hint: "Use situation, notice, index, index_entry, notice_history, or all.",
+      hint: `Use ${APP_SCHEMAS.map(({key})=>key).join(", ")}, or all.`,
     });
   }
-  console.log(JSON.stringify(payload, null, 2));
+  const definitions=selected.map(({key,definition})=>[key,{schema:canonicalSchema(definition),mutation_mappers:{}}] as const);
+  console.log(JSON.stringify(type==="all"?Object.fromEntries(definitions):definitions[0]![1], null, 2));
   return 0;
+}
+
+async function schemaValuesConvertCmd(rest:string[]):Promise<number> {
+  const parsed=parseArgs({args:rest,options:{config:{type:"string"},apply:{type:"boolean"},maintenance:{type:"boolean"},abort:{type:"boolean"},help:{type:"boolean",short:"h"}},allowPositionals:false});
+  if(parsed.values.help){console.log(usageFor("schema-values-convert"));return 0;}
+  const configPath=parsed.values.config??defaultConfigPath();
+  const {node}=loadCtx({configPath});
+  const report=await convertSchemaValues(node,configPath,{apply:parsed.values.apply,maintenance:parsed.values.maintenance,abort:parsed.values.abort});
+  console.log(JSON.stringify(report,null,2));return 0;
 }
 
 async function initCmd(rest: string[]): Promise<number> {
@@ -525,6 +520,8 @@ async function initCmd(rest: string[]): Promise<number> {
   }
 
   const cfgPath = parsed.values.config ?? defaultConfigPath();
+  if(existsSync(cfgPath+".conversion.json"))throw new Error("Resume the saved app conversion before init.");
+  const previousConfig=existsSync(cfgPath)?readFileSync(cfgPath,"utf8"):null;
   const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];
   const userHash = parsed.values["user-hash"] ?? "";
@@ -549,11 +546,12 @@ async function initCmd(rest: string[]): Promise<number> {
   const node = newNodeClient({baseUrl:nodeUrl,userHash:identity.userHash,
     socketPath:resolveSocketPath(nodeSocketPath ? {nodeSocketPath} : undefined),
     schemaFieldAliases:existing?.schemaFieldAliases,canonicalVocabulary});
-  const declared = await resolveOrDeclareSchemaHashes(node, {
+  const resolved = await resolveOrDeclareSchemaHashes(node, {
     quiet: Boolean(parsed.values.json), canonicalVocabulary,
   });
-  const situationHash = parsed.values["schema-hash"] ?? declared.situation;
-  const noticeHash = parsed.values["notice-schema-hash"] ?? declared.notice;
+  const declared=resolved.schemaHashes;
+  const situationHash = declared.situation;
+  const noticeHash = declared.notice;
   const indexHash = declared.index;
   const indexEntryHash = declared.index_entry;
   const noticeHistoryHash = declared.notice_history;
@@ -566,14 +564,14 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
-  const schemaHashes: Record<string, string> = { situation: situationHash };
+  const schemaHashes: Record<string, string> = {...declared, situation: situationHash };
   if (noticeHash) schemaHashes.notice = noticeHash;
   if (indexHash) schemaHashes.index = indexHash;
   if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
   if (noticeHistoryHash) schemaHashes.notice_history = noticeHistoryHash;
 
-  if (canonicalVocabulary && ((parsed.values["schema-hash"] && situationHash !== declared.situation) ||
-      (parsed.values["notice-schema-hash"] && noticeHash !== declared.notice))) {
+  if (((parsed.values["schema-hash"] && parsed.values["schema-hash"] !== resolved.schemaIdentities.situation) ||
+      (parsed.values["notice-schema-hash"] && parsed.values["notice-schema-hash"] !== resolved.schemaIdentities.notice))) {
     throw new FsituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
   }
   const cfg: Config = {
@@ -582,10 +580,11 @@ async function initCmd(rest: string[]): Promise<number> {
     schemaServiceUrl: parsed.values["schema-service-url"] ?? "",
     userHash: identity.userHash,
     schemaHashes,
-    schemaFieldAliases:canonicalVocabulary ? canonicalProfilesForHashes(schemaHashes) : undefined,
+    schemaIdentities:resolved.schemaIdentities,
+    schemaFieldAliases:canonicalVocabulary ? {...canonicalProfilesForHashes(schemaHashes),...canonicalProfilesForHashes(resolved.schemaIdentities)} : undefined,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
-  writeConfig(cfg, cfgPath);
+  writeConfig(cfg, cfgPath, previousConfig);
   // One-time: the long-lived notices still live in the legacy `recent_notices`
   // blob get their entries, so the default `notices` list shows them.
   let seededLongLived = 0;

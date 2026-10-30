@@ -262,19 +262,36 @@ consumer private key lives in the admin SPA / consumer tooling (sibling card
 
 ## Schema
 
-The app owns `fsituations/Situation` and `fsituations/Notice`. Print payloads:
+The app owns eight separate record types. The types include the situation, notice,
+summary, membership, history, and three privacy-safe publication schemas. Print the definitions:
 
 ```bash
 bun run src/cli.ts schema --type all
 bun run src/cli.ts schema --type notice
 ```
 
-On LastDB Mini (and other nodes with `POST /api/apps/declare-schema`), bare
-`situations init` asks Mini to resolve/register both schemas with Schema Service
-and writes the catalog hashes to `~/.situations/config.json` — the same
-first-run path as brain/kanban. You can still pass `--schema-hash` /
-`--notice-schema-hash` to pin already registered schemas, or register/load
-payloads from `situations schema` on older nodes that lack declare-schema.
+Setup requires `owned_app_schemas_v1` and the eight exact definitions in schema
+service. It declares schema-owned values and saves the definition identities
+separately from the runtime addresses. The optional `--schema-hash` and
+`--notice-schema-hash` flags assert definition identities. They cannot replace
+the returned runtime address. Unsupported nodes and incomplete replies cause an error.
+
+Canonical field reuse shares definitions only. The eight record types keep
+their own values. The publication records contain summaries; they do not use
+alternate keys on the full source records. A publication request uses the saved
+owned schemas and one batch for each bounded set of writes.
+
+Existing shared values require an explicit conversion on the compatible engine
+release before the removal upgrade. `schema-values-convert` shows the exact
+schema, identity, and membership scope. The `--apply --maintenance` options
+save that scope before the node pauses requests. A repeat request resumes only
+that scope. `--abort --apply --maintenance` can cancel an unpublished conversion.
+The command saves the final config before the node resumes requests.
+
+The conversion uses each record type's payload field to identify its members.
+It does not infer membership from a reused slug field. It refuses different
+definitions, incomplete membership, and unknown app record types. Setup cannot
+replace a conversion or erase its saved scope.
 
 The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
 and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.

@@ -125,7 +125,7 @@ Options:
   --notice-schema-hash <hash>  assert the canonical Notice definition identity
   --config <path>              write config path
 
-Setup requires owned_app_schemas_v1 and eight registered definitions in schema
+Setup requires owned_app_schemas_v1, independent_hash_range_v1, and eight registered definitions in schema
 service. It saves the definition identities separately from the runtime addresses.
 Existing shared values require schema-values-convert on a compatible release
 before setup or the engine removal upgrade. No unsupported fallback follows.`;

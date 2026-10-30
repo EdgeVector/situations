@@ -270,8 +270,8 @@ bun run src/cli.ts schema --type all
 bun run src/cli.ts schema --type notice
 ```
 
-Setup requires `owned_app_schemas_v1` and the eight exact definitions in schema
-service. It declares schema-owned values and saves the definition identities
+Setup requires `owned_app_schemas_v1`, `independent_hash_range_v1`, and the
+eight exact definitions in schema service. It declares schema-owned values and saves the definition identities
 separately from the runtime addresses. The optional `--schema-hash` and
 `--notice-schema-hash` flags assert definition identities. They cannot replace
 the returned runtime address. Unsupported nodes and incomplete replies cause an error.

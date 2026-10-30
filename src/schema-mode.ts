@@ -26,9 +26,16 @@ export function requireOwnedHome(directory: unknown, version: unknown): void {
       "Existing F-Situations values require explicit schema-values-convert on a compatible LastDB release. No schema was declared.",
     );
   }
-  if (object(payload(version).capabilities).owned_app_schemas_v1 !== true) {
+  // IndexEntry and NoticeHistory are owned HashRange records. A node with
+  // owned Hash schemas only refuses those declarations, so check both flags
+  // before the first declaration instead of failing halfway through setup.
+  const capabilities = object(payload(version).capabilities);
+  const missing = ["owned_app_schemas_v1", "independent_hash_range_v1"].filter(
+    (flag) => capabilities[flag] !== true,
+  );
+  if (missing.length) {
     throw new Error(
-      "F-Situations setup requires owned_app_schemas_v1. Upgrade the selected node before setup.",
+      `F-Situations setup requires ${missing.join(" and ")}. Upgrade the selected node before setup.`,
     );
   }
 }

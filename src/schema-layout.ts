@@ -38,12 +38,12 @@ export const APP_SCHEMAS: ReadonlyArray<{
   },
   {
     key: "admin_posture",
-    member: "updated_at",
+    member: "blocked_actions",
     definition: publicationSchemas.posture,
   },
   {
     key: "admin_notice",
-    member: "updated_at",
+    member: "systems",
     definition: publicationSchemas.notice,
   },
 ];

@@ -24,9 +24,9 @@ import {
   listActiveSituationsIndexed,
   type Situation,
 } from "./record.ts";
-import { OWNER_APP_ID, type FieldType } from "./schemas.ts";
+import { publicationSchemas as SCHEMAS, SNAPSHOT_FIELDS, POSTURE_FIELDS, NOTICE_SLIM_FIELDS } from "./publication-schemas.ts";
+import { commitOps } from "./index-entry.ts";
 
-const SITUATIONS_APP_ID = OWNER_APP_ID;
 export const SNAPSHOT_SLUG = "posture-latest";
 const DEFAULT_MAX_RECORDS = 50;
 
@@ -38,7 +38,7 @@ export interface PublishStatusOptions {
   noticeSince?: string;
   noticeLimit?: number;
   dryRun?: boolean;
-  /** Injected data (tests / dry-run without Mini). */
+  /** Explicit inputs for the privacy-safe publication preview. */
   situations?: Situation[];
   notices?: Notice[];
   /** When omitted, uses loadCtx-style node + cfg for live reads/writes. */
@@ -116,69 +116,6 @@ export interface LastDbDeliveryClient {
   approveDelivery(deliveryId: string): Promise<DeliveryApproveResult>;
 }
 
-interface SchemaDefinition {
-  name: string;
-  owner_app_id: string;
-  descriptive_name: string;
-  purpose_statement: string;
-  schema_type: "Hash";
-  key: { hash_field: string };
-  fields: string[];
-  field_types: Record<string, FieldType>;
-  field_descriptions: Record<string, string>;
-  field_data_classifications: Record<string, { sensitivity_level: number; data_domain: string }>;
-}
-
-const SNAPSHOT_FIELDS = [
-  "slug",
-  "captured_at",
-  "posture_count",
-  "notice_count",
-  "posture_json",
-  "notices_json",
-  "schema_hashes_json",
-] as const;
-
-const POSTURE_FIELDS = [
-  "slug",
-  "severity",
-  "status",
-  "summary",
-  "blocked_actions",
-  "updated_at",
-] as const;
-
-const NOTICE_SLIM_FIELDS = [
-  "slug",
-  "kind",
-  "at",
-  "title",
-  "summary",
-  "systems",
-  "updated_at",
-] as const;
-
-const SCHEMAS: Record<SchemaKey, SchemaDefinition> = {
-  snapshot: schema(
-    "SituationAdminSnapshot",
-    "A slim point-in-time situations posture+notices snapshot safe for admin delivery",
-    [...SNAPSHOT_FIELDS],
-    "slug",
-  ),
-  posture: schema(
-    "SituationAdminPosture",
-    "One privacy-safe active situation posture row for admin delivery",
-    [...POSTURE_FIELDS],
-    "slug",
-  ),
-  notice: schema(
-    "SituationAdminNotice",
-    "One privacy-safe recent agent-impact notice for admin delivery",
-    [...NOTICE_SLIM_FIELDS],
-    "slug",
-  ),
-};
-
 export function buildPosturePublication(options: {
   situations: Situation[];
   notices: Notice[];
@@ -226,7 +163,7 @@ export async function publishPostureStatus(
       throw new FsituationsError({
         code: "publish_missing_source",
         message: "publish-status needs situations config (or injected situations/notices).",
-        hint: "Run `situations init`, or pass a node+cfg for tests.",
+        hint: "Run `situations init` for the selected node, then supply its config.",
       });
     }
     // The publication keeps only active situations and the notices of one
@@ -259,16 +196,22 @@ export async function publishPostureStatus(
     };
   }
 
-  const schemaHashes = await declareSchemas(node);
+  if(!cfg) throw new FsituationsError({code:"publish_missing_config",message:"A real publication requires its saved app config."});
+  const schemaHashes=Object.fromEntries((["snapshot","posture","notice"] as const).map((key)=>{
+    const address=cfg.schemaHashes[`admin_${key}`];
+    if(!address) throw new FsituationsError({code:"publication_schema_missing",message:"The selected app config needs explicit owned-schema setup before publication."});
+    return[key,address];
+  })) as Record<SchemaKey,string>;
   publication.snapshot.schema_hashes_json = JSON.stringify(schemaHashes);
 
-  await upsert(node, schemaHashes.snapshot, SNAPSHOT_SLUG, publication.snapshot, [...SNAPSHOT_FIELDS]);
-  for (const row of publication.posture) {
-    await upsert(node, schemaHashes.posture, requiredField(row, "slug"), row, [...POSTURE_FIELDS]);
-  }
-  for (const row of publication.notices) {
-    await upsert(node, schemaHashes.notice, requiredField(row, "slug"), row, [...NOTICE_SLIM_FIELDS]);
-  }
+  const records=[
+    {schemaHash:schemaHashes.snapshot,keyHash:SNAPSHOT_SLUG,fields:publication.snapshot},
+    ...publication.posture.map((fields)=>({schemaHash:schemaHashes.posture,keyHash:requiredField(fields,"slug"),fields})),
+    ...publication.notices.map((fields)=>({schemaHash:schemaHashes.notice,keyHash:requiredField(fields,"slug"),fields})),
+  ];
+  // Native update is an upsert. Collect the independent writes without point-read probes.
+  const writes=records.map(({schemaHash,keyHash,fields})=>({schemaHash,keyHash,fields,mutationType:"update" as const}));
+  await commitOps(node,writes);
 
   return {
     ...publication,
@@ -368,63 +311,11 @@ export function noticeFields(n: Notice, capturedAt: string): FieldMap {
   };
 }
 
-async function declareSchemas(node: NodeClient): Promise<Record<SchemaKey, string>> {
-  const out = {} as Record<SchemaKey, string>;
-  for (const key of Object.keys(SCHEMAS) as SchemaKey[]) {
-    const declared = await node.declareAppSchema(
-      SITUATIONS_APP_ID,
-      SCHEMAS[key] as unknown as Record<string, unknown>,
-    );
-    out[key] = declared.canonical;
-  }
-  return out;
-}
-
-async function upsert(
-  node: NodeClient,
-  schemaHash: string,
-  keyHash: string,
-  fields: FieldMap,
-  queryFields: string[],
-): Promise<void> {
-  const existing = await node.queryAll({
-    schemaHash,
-    fields: queryFields,
-    filter: { HashKey: keyHash },
-  });
-  const found = existing.results.some((row) => row.key.hash === keyHash);
-  if (found) {
-    await node.updateRecord({ schemaHash, fields, keyHash });
-  } else {
-    await node.createRecord({ schemaHash, fields, keyHash });
-  }
-}
-
 function placeholderSchemaHashes(): Record<SchemaKey, string> {
   return {
     snapshot: "dry-run-SituationAdminSnapshot",
     posture: "dry-run-SituationAdminPosture",
     notice: "dry-run-SituationAdminNotice",
-  };
-}
-
-function schema(name: string, purpose: string, fields: string[], hashField: string): SchemaDefinition {
-  return {
-    name,
-    owner_app_id: SITUATIONS_APP_ID,
-    descriptive_name: name,
-    purpose_statement: purpose,
-    schema_type: "Hash",
-    key: { hash_field: hashField },
-    fields,
-    field_types: Object.fromEntries(fields.map((field) => [field, "String"])) as Record<
-      string,
-      FieldType
-    >,
-    field_descriptions: Object.fromEntries(fields.map((field) => [field, field.replaceAll("_", " ")])),
-    field_data_classifications: Object.fromEntries(
-      fields.map((field) => [field, { sensitivity_level: 0, data_domain: "situations" }]),
-    ),
   };
 }
 

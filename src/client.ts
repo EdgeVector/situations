@@ -2,20 +2,20 @@ import { requireOwnedHome, ownedDeclaration, payload } from "./schema-mode.ts";
 import { canonicalSchema, profilesFor } from "./canonical-vocabulary.ts";
 import { fieldAliasTransport, encodeFieldRequest, decodeFieldReply, localSchemaMetadata, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import type { SchemaDefinition } from "./schemas.ts";
-// LastDB node client for fsituations.
+// LastDB node client for situations.
 //
 // As of the @lastdb/app-sdk port, the app DATA PLANE rides the SDK's
 // `LastDbClient` — the same wire client every LastDB app uses:
 //   - query/queryAll  → explicit keyed pages with opaque continuation cursors
 //   - create/update   → `LastDbClient.mutate`
-// SDK typed errors are translated back into fsituations' `FsituationsError`
+// SDK typed errors are translated back into situations' `SituationsError`
 // registry (see `mapSdkDataError`).
 //
 // The additional node surface includes explicit schema maintenance, which the
 // app-data-plane SDK contract does not expose:
 //   - `GET /api/system/auto-identity` — resolve/provision the local owner hash.
 //   - `GET /api/schemas`              — list loaded schemas so `init` can pin
-//                                       the canonical fsituations/Situation hash.
+//                                       the canonical situations/Situation hash.
 //   - `POST /api/apps/declare-schema` — Mini first-run orchestration for
 //                                       Schema Service registration/resolution.
 // Both are node-owner endpoints (no capability, no app scope), so they stay on
@@ -46,14 +46,14 @@ import { OWNER_APP_ID } from "./schemas.ts";
 export type Verbose = (msg: string) => void;
 const noopVerbose: Verbose = () => {};
 
-export class FsituationsError extends Error {
+export class SituationsError extends Error {
   readonly code: string;
   readonly hint?: string;
   override readonly cause?: unknown;
 
   constructor(opts: { code: string; message: string; hint?: string; cause?: unknown }) {
     super(opts.message);
-    this.name = "FsituationsError";
+    this.name = "SituationsError";
     this.code = opts.code;
     this.hint = opts.hint;
     this.cause = opts.cause;
@@ -155,11 +155,11 @@ export type NodeClient = {
 };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-// Safety ceiling for complete keyed page drains. fsituations record sets
+// Safety ceiling for complete keyed page drains. situations record sets
 // are small; this only guards against a pathological node.
 const QUERY_MAX_ROWS = 100_000;
 
-// The SDK's capability store is never used on this path: fsituations runs in
+// The SDK's capability store is never used on this path: situations runs in
 // owner context (X-User-Hash only, no consent/capability), so a no-op store
 // keeps the SDK from ever touching a real keychain.
 const noopCapabilityStore: SdkCapabilityStore = {
@@ -310,7 +310,7 @@ export function newNodeClient(opts: {
       if (status !== 200) throw mapNodeError(status, body, "/api/schemas");
       const directory=payload(body);
       if (directory.ready!==true || !Array.isArray(directory.schemas)) {
-        throw new FsituationsError({code:"schema_catalog_invalid",message:"The schema directory is incomplete."});
+        throw new SituationsError({code:"schema_catalog_invalid",message:"The schema directory is incomplete."});
       }
       const raw=directory.schemas;
       return raw
@@ -538,13 +538,13 @@ function rawBodySuffix(body: unknown): string {
   return text && text !== "{}" ? `: ${text.slice(0, 300)}` : "";
 }
 
-function mapNodeError(status: number, body: unknown, path: string): FsituationsError {
+function mapNodeError(status: number, body: unknown, path: string): SituationsError {
   const code = bodyError(body) ?? `http_${status}`;
   const message = bodyMessage(body) ?? `LastDB node ${path} failed with HTTP ${status}${rawBodySuffix(body)}.`;
-  return new FsituationsError({ code, message });
+  return new SituationsError({ code, message });
 }
 
-// Translate the SDK's typed data-plane errors back into fsituations' error
+// Translate the SDK's typed data-plane errors back into situations' error
 // registry, preserving the same code/message shape the raw path produced. The
 // SDK maps each discriminated node response 1:1, so this stays a small table.
 function mapSdkDataError(
@@ -552,7 +552,7 @@ function mapSdkDataError(
   baseUrl: string,
   socketPath: string | undefined,
   path: string,
-): FsituationsError {
+): SituationsError {
   // CapabilityDeniedError subclasses PermissionDeniedError — check it first.
   if (err instanceof CapabilityDeniedError) {
     return mapNodeError(403, { status: 403, reason: err.reason }, path);
@@ -564,7 +564,7 @@ function mapSdkDataError(
   // message is already the one line an operator needs; wrapping it as
   // "HTTP 400" would bury the fact that the NODE is the side that moved.
   if (err instanceof NodeTooOldError) {
-    return new FsituationsError({ code: "node_too_old", message: err.message, cause: err });
+    return new SituationsError({ code: "node_too_old", message: err.message, cause: err });
   }
   if (err instanceof RequestRejectedError) {
     return mapNodeError(400, err.body ?? { kind: err.kind, error: err.message }, path);
@@ -575,17 +575,17 @@ function mapSdkDataError(
   if (err instanceof TransportError) {
     return connectionError(baseUrl, socketPath, err);
   }
-  if (err instanceof FsituationsError) return err;
-  return new FsituationsError({
+  if (err instanceof SituationsError) return err;
+  return new SituationsError({
     code: "sdk_error",
     message: `SDK call to ${path} failed: ${err instanceof Error ? err.message : String(err)}.`,
     cause: err,
   });
 }
 
-function connectionError(baseUrl: string, socketPath: string | undefined, err: unknown): FsituationsError {
+function connectionError(baseUrl: string, socketPath: string | undefined, err: unknown): SituationsError {
   const detail = err instanceof Error ? err.message : String(err);
-  return new FsituationsError({
+  return new SituationsError({
     code: "node_unreachable",
     message: `Could not reach LastDB node at ${baseUrl}${socketPath ? ` via ${socketPath}` : ""}: ${detail}.`,
     cause: err,

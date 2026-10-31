@@ -1,4 +1,4 @@
-import { FsituationsError } from "./client.ts";
+import { SituationsError } from "./client.ts";
 
 export type FieldProjectionSource = Record<string, unknown>;
 
@@ -16,7 +16,7 @@ export function parseFieldProjection(raw: string | string[] | undefined): string
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   if (fields.length === 0) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "invalid_field",
       message: "--field requires at least one non-empty field path.",
       hint: "Example: situations list --field slug,status,severity",
@@ -86,8 +86,8 @@ function parsePath(path: string): Array<string | number> {
   return segments;
 }
 
-function invalidFieldPath(path: string): FsituationsError {
-  return new FsituationsError({
+function invalidFieldPath(path: string): SituationsError {
+  return new SituationsError({
     code: "invalid_field",
     message: `Invalid --field path "${path}".`,
     hint: "Use dot paths like `slug` or `phases[0].slug`; arrays like scope_repos join with `,`.",

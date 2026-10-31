@@ -28,7 +28,7 @@ const SOCKET_FILE_NAME = "folddb.sock";
 // `~/.folddb`. Prefer whichever default home has a LIVE control socket on disk
 // (that's the node actually running), `~/.lastdb` first; fall back to directory
 // existence, `~/.lastdb` first, so a pre-launch machine still points somewhere
-// real. Mirrors fbrain's `resolveDefaultNodeHome` so all three CLIs derive the
+// real. Mirrors brain's `resolveDefaultNodeHome` so all three CLIs derive the
 // same root on a mixed-version machine.
 function resolveDefaultNodeHome(base: string): string {
   const lastdb = join(base, ".lastdb");
@@ -53,14 +53,9 @@ export function resolveSocketPath(cfg?: { nodeSocketPath?: string }): string {
 }
 
 export function defaultConfigPath(): string {
-  const newOverride = process.env.SITUATIONS_CONFIG;
-  if (newOverride && newOverride.length > 0) return newOverride;
-  const override = process.env.FSITUATIONS_CONFIG;
+  const override = process.env.SITUATIONS_CONFIG;
   if (override && override.length > 0) return override;
-  const base = homedir();
-  const primary = join(base, ".situations", "config.json");
-  const compat = join(base, ".fsituations", "config.json");
-  return existsSync(primary) || !existsSync(compat) ? primary : compat;
+  return join(homedir(), ".situations", "config.json");
 }
 
 export class ConfigMissingError extends Error {

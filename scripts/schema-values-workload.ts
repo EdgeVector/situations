@@ -1,4 +1,4 @@
-/** Actual exported app operations against a generated, CI-owned LastDB home. No app CLI. */
+/** Actual exported app operations against a generated, CI-owned LastDB home. No app CLI. Each arm sets up its own home. */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
 import { canonicalProfilesForHashes } from "../src/init-schema.ts";
+import { OWNER_APP_ID } from "../src/schemas.ts";
 import type { Config } from "../src/config.ts";
 import type { BatchMutationOp, NodeClient } from "../src/client.ts";
 import type { Situation } from "../src/record.ts";
@@ -45,7 +46,7 @@ const runner = resolve(process.env.RUNNER_TEMP!);
 require(output.startsWith(
   runner + sep,
 ), "The output must use this runner's temporary directory.");
-require(["baseline", "candidate", "fresh"].includes(
+require(["baseline", "candidate"].includes(
   args.label!,
 ), "Unknown comparison arm.");
 const count = Number(args.records ?? 64);
@@ -159,8 +160,8 @@ async function setup(
     ...prior,
     configVersion: config.CONFIG_VERSION,
     nodeUrl: "http://127.0.0.1",
-    schemaServiceUrl:
-      "https://axo709qs11.execute-api.us-east-1.amazonaws.com/v1",
+    // The node resolves definitions through its own Schema Service. The app keeps this for diagnostics only.
+    schemaServiceUrl: "",
     userHash: identity.userHash,
     nodeSocketPath: args.socket!,
     schemaHashes: { ...prior?.schemaHashes, ...hashes },
@@ -349,7 +350,7 @@ async function publish(
 }
 
 async function runSetup(): Promise<void> {
-  const root = args.label === "fresh" ? args.candidate! : args.baseline!;
+  const root = args.label === "candidate" ? args.candidate! : args.baseline!;
   let { node, cfg } = await setup(root);
   const record = await load(root, "record"),
     notice = await load(root, "notice");
@@ -392,40 +393,6 @@ async function runSetup(): Promise<void> {
   save("members.json", members);
   const before = await snapshot(node, cfg);
   save("seed-atoms.json", before);
-  if (args.label === "candidate") {
-    const candidate = await client(args.candidate!, cfg);
-    const converter = await load(args.candidate!, "schema-conversion");
-    const plan = await converter.convertSchemaValues(
-      candidate,
-      args.config,
-      {},
-    );
-    require(plan.phase === "plan" &&
-      plan.schemas.length ===
-        8, "The actual app did not select eight conversion schemas.");
-    const conversion = await converter.convertSchemaValues(
-      candidate,
-      args.config,
-      { apply: true, maintenance: true },
-    );
-    const writtenCount = Object.values(members).reduce(
-      (total, records) => total + Object.keys(records).length,
-      0,
-    );
-    require(conversion.phase === "complete" &&
-      conversion.durable === true &&
-      conversion.converted_schemas.length === 8 &&
-      conversion.selected_keys === conversion.expected_selected_keys &&
-      conversion.selected_keys === writtenCount &&
-      conversion.processed_keys ===
-        conversion.expected_keys, "The actual conversion did not cover the complete accepted app membership.");
-    save("conversion.json", conversion);
-    cfg = (await load(args.candidate!, "config")).readConfig(args.config);
-    require(same(
-      await snapshot(await client(args.candidate!, cfg), cfg),
-      before,
-    ), "Conversion changed values, current atoms, or author metadata.");
-  }
   save("seed.json", {
     logical_situations: count,
     logical_notices: count,
@@ -462,7 +429,7 @@ async function runMeasure(): Promise<void> {
     const directory = await node.rawCall("GET", "/api/schemas");
     const body = (directory.body as any)?.data ?? directory.body;
     const owned = body.schemas.filter(
-      (schema: any) => schema.owner_app_id === "fsituations",
+      (schema: any) => schema.owner_app_id === OWNER_APP_ID,
     );
     require(owned.length === 8 &&
       owned.every(
@@ -473,7 +440,7 @@ async function runMeasure(): Promise<void> {
   }
   const record = await load(active, "record"),
     notice = await load(active, "notice");
-  const iterations = args.label === "fresh" ? 16 : 64;
+  const iterations = 64;
   let sourceUpdateKeepsPublicationValues = false;
   for (let index = 0; index < iterations; index++) {
     const key = index % count;

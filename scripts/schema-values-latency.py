@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hosted CI comparison of actual exported app functions and explicit ownership conversion."""
+"""Hosted CI comparison of actual exported app functions. Each app sets up its own fresh home."""
 import argparse
 import json
 import math
@@ -31,8 +31,9 @@ def cloud_off(node, output, phase):
 
 
 def product(args, node, output, label, phase):
+    # Drop every app variable, including the earlier app's names: no host setting reaches either arm.
     environment = {name: value for name, value in os.environ.items()
-                   if not name.startswith(("LASTDB", "FOLD", "SITUATIONS", "FSITUATIONS", "SENTRY", "OBS_", "OTEL_"))
+                   if not name.startswith(("LASTDB", "FOLD", "SENTRY", "OBS_", "OTEL_")) and "SITUATIONS" not in name
                    and name not in ("GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY")}
     environment.update(LASTDB_SUPPRESS_RECOVERY_PHRASE="1")
     command = ["bun", str(args.worker), "--baseline", str(args.baseline), "--candidate", str(args.candidate),
@@ -47,8 +48,9 @@ def product(args, node, output, label, phase):
 def arm(args, Node, finish_setup, label, pair):
     output = args.output / f"pair-{pair}-{label}"
     output.mkdir(mode=0o700)
-    fresh = label == "fresh"
-    binary, revision = (args.daemon_after, args.daemon_after_revision) if fresh else (args.daemon_before, args.daemon_before_revision)
+    # The earlier app runs on the compatible daemon. This app runs on the removal daemon. No arm converts a home.
+    candidate = label == "candidate"
+    binary, revision = (args.daemon_after, args.daemon_after_revision) if candidate else (args.daemon_before, args.daemon_before_revision)
     node = Node(binary, revision, output, temporary_directory=Path(os.environ["RUNNER_TEMP"]).resolve(),
                 full_socket_name="folddb-full.sock", environment={"LASTDB_SELF_METRICS_TO_DB": "false",
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
@@ -58,8 +60,6 @@ def arm(args, Node, finish_setup, label, pair):
         product(args, node, output, label, "setup")
         finish_setup(node, output)
         node.stop()
-        if label == "candidate":
-            node.binary, node.revision = args.daemon_after, args.daemon_after_revision
         node.start()
         cloud_off(node, output, "reopen")
         product(args, node, output, label, "measure")
@@ -81,14 +81,15 @@ def arm(args, Node, finish_setup, label, pair):
 
 
 def render(args, arms):
-    lines = ["## F-Situations schema ownership and latency", "",
+    lines = ["## Situations schema ownership and latency", "",
              f"App: `{args.baseline_revision}` → `{args.candidate_revision}`.",
              f"Compatible daemon: `{args.daemon_before_revision}`. Removal daemon: `{args.daemon_after_revision}`.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
-             "Two AB/BA pairs each retain 64 samples per operation. A separate fresh owned-home arm retains 16 samples.",
-             "The candidate converts the real legacy home on the compatible daemon, then reopens that home on the removal daemon.",
+             "Two AB/BA pairs each retain 64 samples per operation.",
+             "Each app creates its own generated home. The baseline uses the compatible daemon. The candidate uses the removal daemon.",
+             "No arm converts a home. The daemons and the definition check use the DEV Schema Service.",
              "The proof checks accepted app-written keys, full values, current atom identities, author metadata, range membership, repeated setup, and flush/reopen.",
-             "The legacy summary schema is empty because the current product no longer writes it. Its exact definition still converts.",
+             "The legacy summary schema is empty because the current product no longer writes it.",
              "Cloud sync stays OFF. The workflow does not invoke the Situations CLI or alter app identity gates.",
              "Times cover the complete exported app operation and accepted-write accounting. They exclude the verifier and process startup.", "",
              "| Operation | Before P50 ms | After P50 ms | Before P95 ms | After P95 ms | P95 change |",
@@ -134,7 +135,7 @@ def main():
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
               "binary_sha256": {name: file_hash(getattr(args, name)) for name in ("daemon_before", "daemon_after")}, "arms": []}
     try:
-        for pair, order in enumerate((("baseline", "candidate"), ("candidate", "baseline"), ("fresh",))):
+        for pair, order in enumerate((("baseline", "candidate"), ("candidate", "baseline"))):
             for label in order:
                 result["arms"].append(arm(args, Node, finish_setup, label, pair))
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:

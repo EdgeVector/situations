@@ -3,7 +3,7 @@
 // more; index-entry.ts reads a blob once to seed a partition, and reads its
 // `updated_at` to notice an old binary that wrote after the migration.
 
-import { FsituationsError, type NodeClient } from "./client.ts";
+import { SituationsError, type NodeClient } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 
 const LEGACY_FIELDS = ["key", "payload_json", "updated_at"];
@@ -14,9 +14,9 @@ export function hasIndexSchema(cfg: { schemaHashes: Record<string, string> }): b
 
 export function requireIndexSchema(cfg: { schemaHashes: Record<string, string> }): void {
   if (hasIndexSchema(cfg)) return;
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "index_schema_required",
-    message: "The fsituations Index schema is required for list operations.",
+    message: "The situations Index schema is required for list operations.",
     hint: "Run `situations init` against the node to declare and pin the keyed indexes; unfiltered product-schema scans are not supported.",
   });
 }
@@ -54,7 +54,7 @@ export async function readLegacyRow(
       updated_at: String(row.fields.updated_at ?? ""),
     };
   } catch (err) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "index_legacy_unreadable",
       message: `Legacy Index row "${key}" is not valid JSON (${err instanceof Error ? err.message : String(err)}).`,
       hint: "The row cannot be read as a list of entries; fix or remove it before this partition is read.",

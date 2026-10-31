@@ -17,7 +17,7 @@
     // is created and the bare specifier fails to resolve at runtime. Resolving
     // `@lastdb/app-sdk` via a tsconfig path alias instead removes the
     // install-time dependency entirely: bun honors these paths relative to the
-    // ENTRYPOINT's directory, so it resolves whether fsituations is a local
+    // ENTRYPOINT's directory, so it resolves whether situations is a local
     // clone or run via `bun --cwd`. To refresh the SDK, replace
     // vendor/lastdb-app-sdk/ with a freshly unpacked @lastdb/app-sdk tarball
     // (tar xzf … --strip-components=1).

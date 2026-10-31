@@ -1,6 +1,6 @@
 /** Export exact registration payloads, or confirm them against the real schema service. */
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
@@ -11,6 +11,7 @@ const { values } = parseArgs({
   options: {
     export: { type: "string" },
     baseline: { type: "string" },
+    "lastdb-source": { type: "string" },
     output: { type: "string" },
   },
   allowPositionals: false,
@@ -19,7 +20,7 @@ const schemas = APP_SCHEMAS.map(({ definition }) =>
   canonicalSchema(definition),
 );
 if (values.export) {
-  if (values.baseline || values.output)
+  if (values.baseline || values["lastdb-source"] || values.output)
     throw Error("Choose export or CI verification.");
   // Registration owns canonical definitions. Value ownership belongs to the node declaration.
   writeFileSync(
@@ -38,12 +39,27 @@ if (values.export) {
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     !values.baseline ||
+    !values["lastdb-source"] ||
     !values.output
   ) {
     throw Error(
-      "CI verification requires exact baseline source and an output path.",
+      "CI verification requires exact baseline source, LastDB source, and an output path.",
     );
   }
+  // The daemons read the same registry: ENVIRONMENT selects the service from the
+  // exact LastDB source's folddb_profile/environments.json.
+  const environment = process.env.ENVIRONMENT ?? "";
+  const registry = JSON.parse(
+    readFileSync(
+      join(resolve(values["lastdb-source"]), "folddb_profile", "environments.json"),
+      "utf8",
+    ),
+  );
+  const service = registry.environments?.[environment]?.schema_service;
+  if (typeof service !== "string" || !service.startsWith("https://"))
+    throw Error(
+      "Set ENVIRONMENT to the Schema Service environment that the comparison daemons use.",
+    );
   const root = resolve(values.baseline);
   const before = await import(pathToFileURL(root + "/src/schemas.ts").href);
   const vocabulary = await import(
@@ -78,7 +94,7 @@ if (values.export) {
     ].map(async ({ label, schema }) => {
       // This public replay carries no publisher authority. An unregistered definition must fail.
       const response = await fetch(
-        "https://axo709qs11.execute-api.us-east-1.amazonaws.com/v1/schemas",
+        `${service}/v1/schemas`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -109,7 +125,8 @@ if (values.export) {
         );
       return {
         label,
-        schema: schema.descriptive_name,
+        environment,
+        schema: `${schema.owner_app_id}/${schema.descriptive_name}`,
         status: response.status,
         exact_definition: exact,
       };
@@ -131,7 +148,7 @@ if (values.export) {
   for (const result of results) console.log(JSON.stringify(result));
   if (results.length !== 13 || results.some((item) => !item.exact_definition)) {
     throw Error(
-      "Publish the exact F-Situations definitions through the registered owner before the comparison.",
+      `Publish the exact Situations definitions in the ${environment} Schema Service before the comparison.`,
     );
   }
 }

@@ -11,7 +11,7 @@ import { canonicalSchema } from "./canonical-vocabulary.ts";
 
 import { existsSync } from "node:fs";
 
-import { FsituationsError, type NodeClient } from "./client.ts";
+import { SituationsError, type NodeClient } from "./client.ts";
 import { resolveSocketPath, type Config } from "./config.ts";
 import {
   filterNotices,
@@ -160,7 +160,7 @@ export async function publishPostureStatus(
 
   if (situations === undefined || notices === undefined) {
     if (!node || !cfg) {
-      throw new FsituationsError({
+      throw new SituationsError({
         code: "publish_missing_source",
         message: "publish-status needs situations config (or injected situations/notices).",
         hint: "Run `situations init` for the selected node, then supply its config.",
@@ -196,10 +196,10 @@ export async function publishPostureStatus(
     };
   }
 
-  if(!cfg) throw new FsituationsError({code:"publish_missing_config",message:"A real publication requires its saved app config."});
+  if(!cfg) throw new SituationsError({code:"publish_missing_config",message:"A real publication requires its saved app config."});
   const schemaHashes=Object.fromEntries((["snapshot","posture","notice"] as const).map((key)=>{
     const address=cfg.schemaHashes[`admin_${key}`];
-    if(!address) throw new FsituationsError({code:"publication_schema_missing",message:"The selected app config needs explicit owned-schema setup before publication."});
+    if(!address) throw new SituationsError({code:"publication_schema_missing",message:"The selected app config needs explicit owned-schema setup before publication."});
     return[key,address];
   })) as Record<SchemaKey,string>;
   publication.snapshot.schema_hashes_json = JSON.stringify(schemaHashes);

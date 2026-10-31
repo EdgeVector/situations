@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { convertSchemaValues } from "./schema-conversion.ts";
 import { canonicalSchema } from "./canonical-vocabulary.ts";
 import { canonicalProfilesForHashes } from "./init-schema.ts";
 import { APP_SCHEMAS } from "./schema-layout.ts";
@@ -10,7 +9,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import pkg from "../package.json" with { type: "json" };
-import { FsituationsError, newNodeClient } from "./client.ts";
+import { SituationsError, newNodeClient } from "./client.ts";
 import {
   ConfigInvalidError,
   ConfigMissingError,
@@ -73,7 +72,6 @@ Usage:
   situations <command> [options]
 
 Commands:
-  schema-values-convert  explicitly convert existing schema-owned values
   init                 declare eight owned schemas and save their runtime addresses
   schema               print the exact definitions for the eight app record types
   doctor               check the index layout: schemas, legacy copy, drift, unreadable entries (read only)
@@ -94,7 +92,7 @@ Common flags:
   --field <a,b,c>      project fields as plain tab-separated text — one row per
                        record, missing field → empty. Use this instead of
                        piping --json into python/node to pull one field.
-  --config <path>      config path (else $SITUATIONS_CONFIG, $FSITUATIONS_CONFIG, or ~/.situations/config.json)
+  --config <path>      config path (else $SITUATIONS_CONFIG or ~/.situations/config.json)
 
 Notices are non-blocking: upgrades/restarts that other agents should treat as
 context, not policy. Situation preflight is unchanged.
@@ -105,14 +103,10 @@ Examples:
   situations list --field slug,status,severity
   situations notice --title "LastDB upgraded to 0.22.8" --kind upgrade --system lastdbd
   situations notices --since 30m
-  situations preflight --action enable-ci --repo EdgeVector/fold
-
-Compatibility: fsituations remains an alias during the migration.`;
+  situations preflight --action enable-ci --repo EdgeVector/fold`;
 
 export function usageFor(command: string): string {
   switch (command) {
-    case "schema-values-convert":
-      return "situations schema-values-convert [--apply --maintenance] [--abort] [--config PATH]\nPlan by default. Apply pauses node requests and converts only the exact saved app scope.";
     case "init":
       return `situations init
 
@@ -128,8 +122,7 @@ Options:
 Setup requires owned_app_schemas_v1, independent_hash_range_v1, and eight
 registered definitions in schema service. It saves the definition identities
 separately from the runtime addresses.
-Existing shared values require schema-values-convert on a compatible release
-before setup or the engine removal upgrade. No unsupported fallback follows.`;
+Setup refuses a home with shared app values and makes no change.`;
     case "put":
       return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
@@ -267,9 +260,9 @@ Run it after an upgrade, after \`situations init\`.`;
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
 Write a privacy-safe admin deliverable snapshot to the local LastDB Mini socket:
-  - fsituations/SituationAdminSnapshot key posture-latest
-  - fsituations/SituationAdminPosture per active/monitoring situation
-  - fsituations/SituationAdminNotice per recent notice (default --since 24h)
+  - situations/SituationAdminSnapshot key posture-latest
+  - situations/SituationAdminPosture per active/monitoring situation
+  - situations/SituationAdminNotice per recent notice (default --since 24h)
 
 Fields are intentionally slim (posture: slug/severity/status/summary/blocked_actions;
 notices: kind/at/title/summary/systems). Full phases_json and preflight bodies are
@@ -341,8 +334,6 @@ async function main(argv: string[]): Promise<number> {
       return schemaCmd(rest);
     case "init":
       return await initCmd(rest);
-    case "schema-values-convert":
-      return await schemaValuesConvertCmd(rest);
     case "doctor":
       return await doctorCmd(rest);
     case "put":
@@ -364,7 +355,7 @@ async function main(argv: string[]): Promise<number> {
     case "which":
       return whichCmd(rest);
     default:
-      throw new FsituationsError({
+      throw new SituationsError({
         code: "unknown_command",
         message: `Unknown command "${command}".`,
         hint: "Run `situations help`.",
@@ -479,7 +470,7 @@ function schemaCmd(rest: string[]): number {
   const type = (parsed.values.type ?? "all").toLowerCase().replaceAll("-","_");
   const selected=APP_SCHEMAS.filter((entry)=>type==="all"||entry.key===type);
   if (!selected.length) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "invalid_type",
       message: `Unknown --type "${type}".`,
       hint: `Use ${APP_SCHEMAS.map(({key})=>key).join(", ")}, or all.`,
@@ -488,15 +479,6 @@ function schemaCmd(rest: string[]): number {
   const definitions=selected.map(({key,definition})=>[key,{schema:canonicalSchema(definition),mutation_mappers:{}}] as const);
   console.log(JSON.stringify(type==="all"?Object.fromEntries(definitions):definitions[0]![1], null, 2));
   return 0;
-}
-
-async function schemaValuesConvertCmd(rest:string[]):Promise<number> {
-  const parsed=parseArgs({args:rest,options:{config:{type:"string"},apply:{type:"boolean"},maintenance:{type:"boolean"},abort:{type:"boolean"},help:{type:"boolean",short:"h"}},allowPositionals:false});
-  if(parsed.values.help){console.log(usageFor("schema-values-convert"));return 0;}
-  const configPath=parsed.values.config??defaultConfigPath();
-  const {node}=loadCtx({configPath});
-  const report=await convertSchemaValues(node,configPath,{apply:parsed.values.apply,maintenance:parsed.values.maintenance,abort:parsed.values.abort});
-  console.log(JSON.stringify(report,null,2));return 0;
 }
 
 async function initCmd(rest: string[]): Promise<number> {
@@ -533,7 +515,7 @@ async function initCmd(rest: string[]): Promise<number> {
   });
   const identity = userHash ? { provisioned: true as const, userHash } : await probe.autoIdentity();
   if (!identity.provisioned) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_identity",
       message: "Could not resolve a LastDB user identity.",
       hint: "Pass --user-hash or provision the local node before running init.",
@@ -558,9 +540,9 @@ async function initCmd(rest: string[]): Promise<number> {
   const noticeHistoryHash = declared.notice_history;
 
   if (!situationHash) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "schema_not_loaded",
-      message: "No loaded fsituations/Situation schema was found on the node.",
+      message: "No loaded situations/Situation schema was found on the node.",
       hint: "Publish/load the schema from `situations schema --type situation --json`, or pass --schema-hash.",
     });
   }
@@ -573,7 +555,7 @@ async function initCmd(rest: string[]): Promise<number> {
 
   if (((parsed.values["schema-hash"] && parsed.values["schema-hash"] !== resolved.schemaIdentities.situation) ||
       (parsed.values["notice-schema-hash"] && parsed.values["notice-schema-hash"] !== resolved.schemaIdentities.notice))) {
-    throw new FsituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
+    throw new SituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
   }
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
@@ -683,7 +665,7 @@ async function putCmd(rest: string[]): Promise<number> {
   }
   const file = parsed.positionals[0];
   if (!file) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_input",
       message: "Missing JSON file path.",
       hint: "Use `situations put <file>` or `situations put -` for stdin.",
@@ -777,7 +759,7 @@ async function showCmd(rest: string[]): Promise<number> {
   }
   const fields = parseFieldProjection(parsed.values.field);
   const slug = parsed.positionals[0];
-  if (!slug) throw new FsituationsError({ code: "missing_slug", message: "Missing situation slug." });
+  if (!slug) throw new SituationsError({ code: "missing_slug", message: "Missing situation slug." });
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
   const situation = await requireSituation(node, cfg, slug);
   if (fields.length > 0) {
@@ -814,7 +796,7 @@ async function preflightCmd(rest: string[]): Promise<number> {
   const fields = parseFieldProjection(parsed.values.field);
   const action = parsed.values.action;
   if (!action) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_action",
       message: "Missing --action.",
       hint: "Example: situations preflight --action enable-ci --repo EdgeVector/fold",
@@ -836,7 +818,7 @@ async function preflightCmd(rest: string[]): Promise<number> {
     });
   } catch (err) {
     // The hint carries the repair (for a dangling entry, the exact `put` that removes it).
-    const hint = err instanceof FsituationsError && err.hint ? ` ${err.hint}` : "";
+    const hint = err instanceof SituationsError && err.hint ? ` ${err.hint}` : "";
     const message = `${err instanceof Error ? err.message : String(err)}${hint}`;
     if (parsed.values.json) {
       console.log(
@@ -915,7 +897,7 @@ async function noticeCmd(rest: string[]): Promise<number> {
     return 0;
   }
   if (!parsed.values.title) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_title",
       message: "Missing --title (or use `situations notice put <file>`).",
       hint: 'Example: situations notice --title "LastDB upgraded" --kind upgrade --system lastdbd',
@@ -929,7 +911,7 @@ async function noticeCmd(rest: string[]): Promise<number> {
   if (!expires_at && parsed.values["expires-hours"]) {
     const hours = Number(parsed.values["expires-hours"]);
     if (!Number.isFinite(hours) || hours <= 0) {
-      throw new FsituationsError({
+      throw new SituationsError({
         code: "invalid_expires_hours",
         message: `--expires-hours must be a positive number (got "${parsed.values["expires-hours"]}").`,
       });
@@ -978,7 +960,7 @@ async function noticePutCmd(rest: string[]): Promise<number> {
   }
   const file = parsed.positionals[0];
   if (!file) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_input",
       message: "Missing JSON file path.",
       hint: "Use `situations notice put <file>` or `situations notice put -` for stdin.",
@@ -1016,7 +998,7 @@ async function noticeShowCmd(rest: string[]): Promise<number> {
   }
   const slug = parsed.positionals[0];
   if (!slug) {
-    throw new FsituationsError({ code: "missing_slug", message: "Missing notice slug." });
+    throw new SituationsError({ code: "missing_slug", message: "Missing notice slug." });
   }
   const fields = parseFieldProjection(parsed.values.field);
   const { cfg, node } = loadCtx({ configPath: parsed.values.config });
@@ -1094,7 +1076,7 @@ async function noticesCmd(rest: string[]): Promise<number> {
 
 function requireNoticeSchema(cfg: Config): void {
   if (hasNoticeSchema(cfg)) return;
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "notice_schema_missing",
     message: "No Notice schema hash in config.",
     hint: "Run `situations init` (re-declares Notice on Mini) or pass --notice-schema-hash.",
@@ -1348,13 +1330,13 @@ if (import.meta.main) {
     .then((code) => process.exit(code))
     .catch((err) => {
       if (
-        err instanceof FsituationsError ||
+        err instanceof SituationsError ||
         err instanceof ConfigMissingError ||
         err instanceof ConfigInvalidError
       ) {
         console.error(`situations: ${err.message}`);
-        if (err instanceof FsituationsError && err.hint) console.error(`hint: ${err.hint}`);
-        process.exit(err instanceof FsituationsError && err.code.startsWith("missing") ? 2 : 1);
+        if (err instanceof SituationsError && err.hint) console.error(`hint: ${err.hint}`);
+        process.exit(err instanceof SituationsError && err.code.startsWith("missing") ? 2 : 1);
       }
       void captureTopLevel(err, { entrypoint: "cli", top_level: "true" }).finally(() => {
         console.error(err instanceof Error ? err.stack ?? err.message : String(err));

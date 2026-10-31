@@ -1,15 +1,12 @@
 {
   "display_name": "situations",
-  "description": "A LastDB app for active operational posture (situations, phases/sets, scope, links, preflight policy) and non-blocking agent-impact notices (upgrade/restart FYI timeline). The existing fsituations/* schema namespace remains compatible.",
+  "description": "A LastDB app for active operational posture (situations, phases/sets, scope, links, preflight policy) and non-blocking agent-impact notices (upgrade/restart FYI timeline). Its schemas use the situations/* namespace.",
   "homepage_url": "https://github.com/EdgeVector/situations",
   "host_track": {
     "app": "situations",
     "install_mode": "artifact",
     "kind": "artifact-bundle",
     "command": "situations",
-    "aliases": [
-      "fsituations"
-    ],
     "gate": "github",
     "gate_main": "https://github.com/EdgeVector/situations.git#main",
     "artifact_app": "situations",
@@ -20,10 +17,6 @@
       {
         "source": "dist/situations",
         "target": "$HOME/.local/bin/situations"
-      },
-      {
-        "source": "dist/fsituations",
-        "target": "$HOME/.local/bin/fsituations"
       }
     ],
     "notes": "Verified artifact install (GitHub gate, ci-required publish job); PATH links point into the immutable Host Track artifact bundle. Upgrade with host-track refresh situations; never develop in the install tree."

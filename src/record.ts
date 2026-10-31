@@ -1,4 +1,4 @@
-import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
+import { SituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import {
   fieldsFor,
@@ -121,7 +121,7 @@ export function nowIso(): string {
 
 export function validateSlug(slug: string): void {
   if (!SLUG_RE.test(slug)) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "invalid_slug",
       message: `Invalid slug "${slug}".`,
       hint: "Use lowercase letters, digits, hyphens, and underscores; start with a letter or digit.",
@@ -158,7 +158,7 @@ export function rejectGlobalFleetScope(
   }
   if (bad.length === 0) return;
 
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "global_fleet_scope_forbidden",
     message:
       `${bad.join(" and ")} contain bare "*" — that is a global fleet kill ` +
@@ -200,7 +200,7 @@ export function rejectMalformedListFields(input: Record<string, unknown>): void 
     bad.push(`${field}=${JSON.stringify(value)}`);
   }
   if (bad.length === 0) return;
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "malformed_list_field",
     message: `List fields must be arrays of strings: ${bad.join(", ")}.`,
     hint: 'Use [] for "none", or list the values, e.g. "requires_human_clearance": ["enable-ci"].',
@@ -218,7 +218,7 @@ export function rejectConflictingActionLists(input: {
     .sort();
   if (conflicts.length === 0) return;
 
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "conflicting_action_lists",
     message:
       "blocked_actions and allowed_actions contain the same action(s): " +
@@ -318,7 +318,7 @@ export function rejectProseOnlyPolicy(
   }
   if (problems.length === 0) return;
 
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "prose_only_policy",
     message:
       `preflight_message forbids ${problems.length === 1 ? "an action" : "actions"} that ` +
@@ -552,7 +552,7 @@ export async function requireSituation(
 ): Promise<Situation> {
   const situation = await findSituation(node, cfg, slug);
   if (!situation) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "not_found",
       message: `Situation "${slug}" not found.`,
     });
@@ -820,7 +820,7 @@ async function listActiveLegacy(
   at: Date,
 ): Promise<Situation[]> {
   if (!hasIndexSchema(cfg) || !indexLoaded) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "index_schema_not_loaded",
       message:
         "The node has not loaded the situations Index schema, so the active situations cannot be read: run `situations init`.",

@@ -1,4 +1,4 @@
-name: F-Situations schema values and latency
+name: Situations schema values and latency
 on:
   pull_request:
     branches: [main]
@@ -12,6 +12,9 @@ concurrency:
   group: situations-values-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 env:
+  # CI uses the DEV Schema Service. The definition check and both daemons read this
+  # one value, so they always name the same registry. Production needs publisher authority.
+  ENVIRONMENT: dev
   APP_BEFORE: 1dbdd777946922516fd1a40fc508ce207b9f3bba
   APP_AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
   DAEMON_BEFORE: 46f1b2d6fd329b4931fd0f9e18f4fe39adb7bc56
@@ -19,7 +22,7 @@ env:
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:
-    name: Actual app conversion and latency
+    name: Actual app setup and latency
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -63,6 +66,7 @@ jobs:
       - name: Require registered app definitions before the build
         run: |
           bun candidate/scripts/schema-definitions.ts --baseline "$GITHUB_WORKSPACE/baseline" \
+            --lastdb-source "$GITHUB_WORKSPACE/daemon-after" \
             --output "$RUNNER_TEMP/situations-definition-results/definitions.json"
       - name: Build the two actual daemon releases and install app dependencies
         env:
@@ -88,7 +92,7 @@ jobs:
           cd "$RUNNER_TEMP/situations-binaries"
           sha256sum daemon-before daemon-after > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - name: Compare exported app functions across conversion and upgrade
+      - name: Compare exported app functions on fresh homes
         run: |
           python3 candidate/scripts/schema-values-latency.py \
             --baseline "$GITHUB_WORKSPACE/baseline" --baseline-revision "$APP_BEFORE" \

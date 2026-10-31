@@ -2,7 +2,7 @@ import { APP_SCHEMAS } from "./schema-layout.ts";
 import { requireOwnedHome } from "./schema-mode.ts";
 import { profilesFor } from "./canonical-vocabulary.ts";
 import type { FieldAliasProfiles } from "./field-alias-transport.ts";
-import { FsituationsError, type NodeClient } from "./client.ts";
+import { SituationsError, type NodeClient } from "./client.ts";
 import {
   OWNER_APP_ID,
   indexEntrySchema,

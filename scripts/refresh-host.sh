@@ -6,7 +6,7 @@ remote=${SITUATIONS_HOST_TRACK_REMOTE:-lastdb:///situations}
 branch=${SITUATIONS_HOST_TRACK_BRANCH:-main}
 host_root=${HOST_TRACK_HOME:-"$HOME/.host-track"}
 host_track=${SITUATIONS_HOST_TRACK_DIR:-"$host_root/$app"}
-install_bin=${SITUATIONS_INSTALL_BIN:-${FSITUATIONS_INSTALL_BIN:-"$HOME/.local/bin"}}
+install_bin=${SITUATIONS_INSTALL_BIN:-"$HOME/.local/bin"}
 stamp_dir=${HOST_TRACK_STAMP_DIR:-"$HOME/.host-track/stamps"}
 
 if [ "${1:-}" = "--help" ]; then
@@ -14,7 +14,7 @@ if [ "${1:-}" = "--help" ]; then
 Usage: scripts/refresh-host.sh [--force]
 
 Fast-forward ~/.host-track/situations from lastdb:///situations main, then link
-~/.local/bin/situations and ~/.local/bin/fsituations to that host-track checkout.
+~/.local/bin/situations to that host-track checkout.
 EOF
   exit 0
 fi
@@ -54,7 +54,6 @@ if [ ! -x "$source_bin" ]; then
 fi
 
 ln -sf "$source_bin" "$install_bin/situations"
-ln -sf "$source_bin" "$install_bin/fsituations"
 
 host_head=$(git -C "$host_track" rev-parse HEAD)
 gate_head=$(git -C "$host_track" ls-remote "$remote" "refs/heads/$branch" | awk 'NR == 1 {print $1}')
@@ -88,4 +87,3 @@ jq -n \
 
 echo "Refreshed situations host track: $host_track@$host_head"
 echo "Installed situations shim: $install_bin/situations -> $source_bin"
-echo "Installed fsituations compatibility shim: $install_bin/fsituations -> $source_bin"

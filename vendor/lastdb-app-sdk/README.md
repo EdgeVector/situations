@@ -142,7 +142,7 @@ self-authored code just uses the owner socket: you already trust it.
 
 An app you write yourself connects to your node's **owner socket** and runs as
 **NodeOwner**: full read/write, no namespace restriction, no consent flow. This
-is how LastDB's own tools (fbrain, fkanban, fsituations, lastsecrets) run —
+is how LastDB's own tools (brain, kanban, situations, lastsecrets) run —
 same user, owner socket. `ownerClient` is synchronous and keychain-free (it
 never mints, stores, or replays a capability); it authenticates by the OS user
 (the socket's kernel peer credentials over UDS, or an `X-User-Hash` header on a
@@ -788,7 +788,7 @@ kept hand-rolling while using the SDK for the app data plane:
 
 These helpers do not attach `X-App-Capability` and do not represent an app's
 capability-scoped access set `S(A)`. They are for owner-side setup, diagnostics,
-and host-context tools such as fbrain and fsituations.
+and host-context tools such as brain and situations.
 
 ## Capability 403 contract + client-side verification (gap #4)
 

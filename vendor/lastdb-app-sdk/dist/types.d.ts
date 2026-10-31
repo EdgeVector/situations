@@ -587,7 +587,7 @@ export interface LoadedSchema {
 }
 /** Descriptor used to resolve an app-owned loaded schema from `/api/schemas`. */
 export interface SchemaDescriptor {
-    /** Owning app namespace, e.g. `fbrain` or `fsituations`. */
+    /** Owning app namespace, e.g. `brain` or `situations`. */
     ownerAppId: string;
     /** The schema's declarative `descriptive_name`, e.g. `Situation`. */
     descriptiveName: string;

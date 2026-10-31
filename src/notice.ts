@@ -1,4 +1,4 @@
-import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
+import { SituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import {
   fieldsFor,
@@ -126,7 +126,7 @@ function normalizeSeverityHint(value: unknown): NoticeSeverityHint {
 export function parseSinceDuration(raw: string): number {
   const m = /^(\d+(?:\.\d+)?)\s*([smhd])$/i.exec(raw.trim());
   if (!m) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "invalid_since",
       message: `Invalid --since value "${raw}".`,
       hint: 'Use a duration like "30m", "2h", "1d", or "45s".',
@@ -177,7 +177,7 @@ export function normalizeNotice(input: NoticeInput, existing?: Notice): Notice {
 
   const title = input.title ?? existing?.title ?? slug;
   if (!title.trim()) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "missing_title",
       message: "Notice title is required.",
       hint: "Pass --title or a title field in the JSON body.",
@@ -263,7 +263,7 @@ async function findNotice(
 export async function requireNotice(node: NodeClient, cfg: Config, slug: string): Promise<Notice> {
   const notice = await findNotice(node, cfg, slug);
   if (!notice) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "not_found",
       message: `Notice "${slug}" not found.`,
     });

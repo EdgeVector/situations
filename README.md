@@ -5,10 +5,10 @@ situations, phase/set breakdowns, scope, links, agent-facing preflight
 policy, and a **non-blocking notice feed** for agent-impacting changes
 (upgrades, restarts, cutovers).
 
-It fills the gap between F-Brain and F-Kanban:
+It fills the gap between Brain and Kanban:
 
-- F-Brain stores durable rationale and decisions.
-- F-Kanban stores work items.
+- Brain stores durable rationale and decisions.
+- Kanban stores work items.
 - **Situations (posture)** store current shared reality agents must respect
   before mutating shared systems.
 - **Notices** are time-stamped FYIs so agents can attribute flapping
@@ -132,9 +132,8 @@ bun run install-shim
 
 The installer refreshes the durable host-track checkout
 `~/.host-track/situations` from `http://localhost:3300/EdgeVector/situations.git` and creates
-`~/.local/bin/situations` by default. It also installs the `fsituations`
-compatibility alias during the migration. Set `SITUATIONS_INSTALL_BIN` or
-`FSITUATIONS_INSTALL_BIN` to choose another directory.
+`~/.local/bin/situations` by default. Set `SITUATIONS_INSTALL_BIN` to choose
+another directory.
 
 To inspect the current install:
 
@@ -154,10 +153,6 @@ If the shim is not installed but this checkout is available, use the fallback:
 ```bash
 bun --cwd /Users/tomtang/code/edgevector/situations src/cli.ts list --json
 ```
-
-The old checkout path `/Users/tomtang/code/edgevector/fsituations` remains a
-compatibility symlink until the fleet reference sweep lands, so older agent
-fallback commands continue to run.
 
 If Situations is not initialized, agents may continue read-only local
 inspection, but must not mutate shared systems until the Situation check
@@ -221,9 +216,9 @@ same `delivery_slice` / `lastdb.slice.v1` path as the kanban admin consumer
 
 | Record | Key | Fields |
 |--------|-----|--------|
-| `fsituations/SituationAdminSnapshot` | `posture-latest` | captured_at, posture/notice counts + JSON bundles, schema_hashes_json |
-| `fsituations/SituationAdminPosture` | `<slug>` | slug, severity, status, summary, blocked_actions |
-| `fsituations/SituationAdminNotice` | `<slug>` | kind, at, title, summary, systems |
+| `situations/SituationAdminSnapshot` | `posture-latest` | captured_at, posture/notice counts + JSON bundles, schema_hashes_json |
+| `situations/SituationAdminPosture` | `<slug>` | slug, severity, status, summary, blocked_actions |
+| `situations/SituationAdminNotice` | `<slug>` | kind, at, title, summary, systems |
 
 Active/monitoring posture only. Notices default to `--since 24h` (not expired).
 Full `phases_json`, preflight message bodies, and secret material are never
@@ -281,35 +276,43 @@ their own values. The publication records contain summaries; they do not use
 alternate keys on the full source records. A publication request uses the saved
 owned schemas and one batch for each bounded set of writes.
 
-Existing shared values require an explicit conversion on the compatible engine
-release before the removal upgrade. `schema-values-convert` shows the exact
-schema, identity, and membership scope. The `--apply --maintenance` options
-save that scope before the node pauses requests. A repeat request resumes only
-that scope. `--abort --apply --maintenance` can cancel an unpublished conversion.
-The command saves the final config before the node resumes requests.
+This release does not convert a home in place. It has no conversion command.
+Setup refuses a home whose `situations/*` schemas share their values, and makes
+no change.
 
-The conversion uses each record type's payload field to identify its members.
-It does not infer membership from a reused slug field. It refuses different
-definitions, incomplete membership, and unknown app record types. Setup cannot
-replace a conversion or erase its saved scope.
+### Migration note
 
-The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
-and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.
+Earlier releases used the app ID `fsituations`. This release uses the app ID
+`situations`. It keeps no fallback for the earlier names:
+
+| Earlier name | This release |
+|---|---|
+| App ID and schema owner `fsituations` | `situations` |
+| Command alias `fsituations` | `situations` only |
+| Environment variable `FSITUATIONS_CONFIG` | `SITUATIONS_CONFIG` |
+| Environment variable `FSITUATIONS_INSTALL_BIN` | `SITUATIONS_INSTALL_BIN` |
+| Config fallback `~/.fsituations/config.json` | `~/.situations/config.json` only |
+
+A home that holds `fsituations/*` schemas keeps them. This release does not read
+them. Run `situations init` to declare the `situations/*` schemas.
+
+The artifact holds only `dist/situations`. The last-stack host-track entry
+(`config/host-track/apps.json`) must drop its `dist/fsituations` link.
 
 ### Index layout (a list that grows is one record per entry)
 
 A LastDB node refuses one atom above its ceiling (256 KiB by default since
 lastdb#154; HTTP 413 `atom_content_too_large`), and one field value is one
-atom. A list that grows is therefore never one field. The old `fsituations/Index`
+atom. A list that grows is therefore never one field. The old `situations/Index`
 schema kept every list as one JSON blob and its blobs measured 66 to 161 KB and
 grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
-- `fsituations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
+- `situations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
   blob is read to seed the partitions below and is never rewritten or deleted.
   `recent_notices` is read only by a node that has not run `situations init` yet.
-- `fsituations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one record
+- `situations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one record
   of at most 4 KiB per entry. No TTL.
-- `fsituations/NoticeHistory_hashrange_v1` (HashRange, `nh_h` x `nh_r`): the
+- `situations/NoticeHistory_hashrange_v1` (HashRange, `nh_h` x `nh_r`): the
   notice log, shaped for a node TTL. Its range key starts with 20 digits.
 
 | Schema | Partition (hash) | Entry key (range) | Entry holds |
@@ -392,7 +395,7 @@ fails on it.
 Proposed policy: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md,
 section 3.5). The manifest TTL step is built separately. A policy has no
 backfill, must exist before the first write, and must name BOTH installed names
-of the schema (`fsituations/NoticeHistory` and its canonical hash). Entries
+of the schema (`situations/NoticeHistory` and its canonical hash). Entries
 written before a policy exists will never expire.
 
 #### Migration from the old blobs (per partition, nothing deleted, no scan)

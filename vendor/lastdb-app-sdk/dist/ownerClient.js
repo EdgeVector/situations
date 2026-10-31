@@ -1,7 +1,7 @@
 /**
  * `ownerClient` — the ergonomic entry point for OWNER / HOST-context apps.
  *
- * Some apps (fbrain, fsituations, and other first-party host tools) run in the
+ * Some apps (brain, situations, and other first-party host tools) run in the
  * node OWNER's own context: they authenticate with an `X-User-Hash` identity
  * header only, never go through the consent/capability flow, and resolve their
  * OWN socket path from their config. For them the async {@link connect} does not
@@ -109,7 +109,7 @@ function resolveOwnerTransport(options) {
  * @example
  * ```ts
  * const client = ownerClient({
- *   appId: 'fsituations',
+ *   appId: 'situations',
  *   baseUrl: 'http://127.0.0.1:9101',
  *   socketPath: '/Users/me/.folddb/data/folddb.sock',
  *   defaultHeaders: { 'X-User-Hash': userHash },

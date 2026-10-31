@@ -46,7 +46,7 @@
 //      never rewrites an entry that already exists.
 
 import {
-  FsituationsError,
+  SituationsError,
   type BatchMutationOp,
   type NodeClient,
   type QueryRow,
@@ -80,8 +80,8 @@ export function warn(message: string): void {
   process.stderr.write(`warning: ${message}\n`);
 }
 
-export function unreadable(where: string, why: string): FsituationsError {
-  return new FsituationsError({
+export function unreadable(where: string, why: string): SituationsError {
+  return new SituationsError({
     code: "index_entry_unreadable",
     message: `Index entry ${where} cannot be read: ${why}.`,
     hint: "An index entry that cannot be read is a record this command cannot account for, so it stops instead of skipping it. Run `situations doctor`.",
@@ -120,7 +120,7 @@ const SECONDS_DIGITS = 20;
  */
 export function padSeconds(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "invalid_entry_time",
       message: `Cannot key an index entry by the time ${seconds}: it is not a unix time at or after 1970.`,
       hint: "A notice needs a real `created_at` and `expires_at`; fix the timestamp and retry.",
@@ -228,7 +228,7 @@ export async function resolveLayout(node: NodeClient, cfg: Config): Promise<Layo
 export async function requireLayout(node: NodeClient, cfg: Config): Promise<Layout> {
   const layout = await resolveLayout(node, cfg);
   if (layout) return layout;
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "index_layout_missing",
     message:
       "`situations init` has not been run on this node (IndexEntry and NoticeHistory are not loaded): run `situations init`, then retry.",
@@ -347,7 +347,7 @@ export function putOp(
   const def = STORES[store];
   const serialized = payload === "" || payload === null ? "" : JSON.stringify(payload);
   if (atomBytes(serialized) > INDEX_ENTRY_MAX_BYTES) {
-    throw new FsituationsError({
+    throw new SituationsError({
       code: "index_entry_too_large",
       message: `Index entry ${hash}/${range} is ${atomBytes(serialized)} bytes; the limit is ${INDEX_ENTRY_MAX_BYTES}.`,
       hint: "An entry carries keys and small summary fields only; hydrate the rest from the record.",
@@ -859,7 +859,7 @@ export function daysPartition(hash: string): PartitionSpec<string> {
 // ---------------------------------------------------------------------------
 
 function isUnsupportedFilter(err: unknown): boolean {
-  if (!(err instanceof FsituationsError)) return false;
+  if (!(err instanceof SituationsError)) return false;
   // A node that predates the multi-get answers HTTP 400 `invalid_value` ("a key
   // was present with a value outside its grammar"); the code carries the node's
   // error text, the message carries the raw body.
@@ -943,7 +943,7 @@ export function requireAll<T>(
 ): void {
   const missing = [...new Set(slugs)].filter((slug) => !found.has(slug));
   if (missing.length === 0) return;
-  throw new FsituationsError({
+  throw new SituationsError({
     code: "index_entry_dangling",
     message:
       `${missing.length} ${what} index entr${missing.length === 1 ? "y points" : "ies point"} at no record ` +

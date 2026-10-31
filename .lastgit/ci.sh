@@ -8,7 +8,7 @@ echo "== shell syntax =="
 for f in .lastgit/*.sh bin/* scripts/*.sh; do
   [ -e "$f" ] || continue
   case "$f" in
-    *.sh|bin/situations|bin/fsituations)
+    *.sh|bin/situations)
       echo "bash -n $f"
       bash -n "$f"
       ;;

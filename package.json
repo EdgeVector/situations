@@ -6,13 +6,11 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "situations": "src/cli.ts",
-    "fsituations": "src/cli.ts"
+    "situations": "src/cli.ts"
   },
   "scripts": {
     "build": "bash scripts/build-artifact.sh",
     "situations": "bun src/cli.ts",
-    "fsituations": "bun src/cli.ts",
     "install-shim": "sh scripts/install-shim.sh",
     "typecheck": "tsc --noEmit"
   },

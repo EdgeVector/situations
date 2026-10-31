@@ -1,4 +1,4 @@
-export const OWNER_APP_ID = "fsituations";
+export const OWNER_APP_ID = "situations";
 
 export type FieldType = "String" | "DateTime" | { Array: "String" };
 
@@ -335,7 +335,7 @@ export const indexEntrySchema: AddSchemaRequest = {
  * PROPOSED TTL: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md
  * 3.5). THIS CODE SETS NO POLICY. The manifest TTL step is built separately, and
  * a policy has no backfill and must name BOTH installed names of this schema
- * (`fsituations/NoticeHistory` and its canonical hash). Entries written before a
+ * (`situations/NoticeHistory` and its canonical hash). Entries written before a
  * policy exists will never expire.
  *
  * The migration marker keys of a partition are `<far-future seconds>#__migrated__.<k>`

@@ -23,7 +23,7 @@ export function requireOwnedHome(directory: unknown, version: unknown): void {
     )
   ) {
     throw new Error(
-      "Existing F-Situations values require explicit schema-values-convert on a compatible LastDB release. No schema was declared.",
+      "Existing Situations schemas share their values. This release does not convert them. No schema was declared.",
     );
   }
   // IndexEntry and NoticeHistory are owned HashRange records. A node with
@@ -35,7 +35,7 @@ export function requireOwnedHome(directory: unknown, version: unknown): void {
   );
   if (missing.length) {
     throw new Error(
-      `F-Situations setup requires ${missing.join(" and ")}. Upgrade the selected node before setup.`,
+      `Situations setup requires ${missing.join(" and ")}. Upgrade the selected node before setup.`,
     );
   }
 }

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
 import { canonicalProfilesForHashes } from "../src/init-schema.ts";
+import { nodeApiVersion, ownsValues } from "../src/schema-mode.ts";
 import type { Config } from "../src/config.ts";
 import type { BatchMutationOp, NodeClient } from "../src/client.ts";
 import type { Situation } from "../src/record.ts";
@@ -459,7 +460,11 @@ async function runMeasure(): Promise<void> {
         await snapshot(node, cfg),
         read("seed-atoms.json"),
       ), "Repeat setup changed addresses or current atoms.");
-    const directory = await node.rawCall("GET", "/api/schemas");
+    const [directory, version] = await Promise.all([
+      node.rawCall("GET", "/api/schemas"),
+      node.rawCall("GET", "/api/version"),
+    ]);
+    const apiVersion = version.status === 200 ? nodeApiVersion(version.body) : 0;
     const body = (directory.body as any)?.data ?? directory.body;
     const owned = body.schemas.filter(
       (schema: any) => schema.owner_app_id === "fsituations",
@@ -467,7 +472,7 @@ async function runMeasure(): Promise<void> {
     require(owned.length === 8 &&
       owned.every(
         (schema: any) =>
-          schema.independent_fields === true &&
+          ownsValues(schema, apiVersion) &&
           !Object.keys(schema.alternate_keys ?? {}).length,
       ), "The app does not own exactly eight separate record types.");
   }

@@ -24,7 +24,13 @@ import {
 } from "./config.ts";
 import { type NodeClient } from "./client.ts";
 import { APP_SCHEMAS } from "./schema-layout.ts";
-import { object, payload, type ObjectValue } from "./schema-mode.ts";
+import {
+  nodeApiVersion,
+  object,
+  ownsValues,
+  payload,
+  type ObjectValue,
+} from "./schema-mode.ts";
 import { OWNER_APP_ID, type SchemaDefinition } from "./schemas.ts";
 
 type Request = {
@@ -255,9 +261,9 @@ export async function convertSchemaValues(
   let saved: Scope | undefined = scopeRaw
     ? (JSON.parse(scopeRaw) as Scope)
     : undefined;
-  const capabilities = object(
-    (await request(node, "GET", "/api/version")).capabilities,
-  );
+  const version = await request(node, "GET", "/api/version");
+  const capabilities = object(version.capabilities);
+  const apiVersion = nodeApiVersion(version);
   if (capabilities.app_schema_conversion_v1 !== true)
     fail("use a compatible LastDB release before the removal upgrade.");
   const status = await node.rawCall("POST", ROUTE, { action: "app_status" });
@@ -350,7 +356,7 @@ export async function convertSchemaValues(
           .map((source) => {
             const mappings = Object.values(object(source.field_mappers));
             if (
-              source.independent_fields === true ||
+              ownsValues(source, apiVersion) ||
               !mappings.length ||
               typeof source.name !== "string" ||
               !source.name.startsWith(OWNER_APP_ID + "/") ||
@@ -415,8 +421,8 @@ export async function convertSchemaValues(
       fail("the active conversion does not match this saved config and scope.");
     checkScope(pending, saved);
   }
-  const allOwned = selected.every(
-    ({ source }) => source.independent_fields === true,
+  const allOwned = selected.every(({ source }) =>
+    ownsValues(source, apiVersion),
   );
   if (!pending && allOwned) {
     if (
@@ -446,7 +452,7 @@ export async function convertSchemaValues(
   }
   if (
     !pending &&
-    selected.some(({ source }) => source.independent_fields === true)
+    selected.some(({ source }) => ownsValues(source, apiVersion))
   )
     fail("the app contains divergent schema ownership models.");
   if (!options.apply) return { phase: "plan", schemas, retire };
@@ -520,7 +526,7 @@ export async function convertSchemaValues(
       published.forEach((source, index) => {
         validate(source, selected[index]!.local);
         if (
-          source.independent_fields !== true ||
+          !ownsValues(source, apiVersion) ||
           source.identity_hash !== schemas[index]!.expected_identity ||
           Object.keys(object(source.alternate_keys)).length
         )

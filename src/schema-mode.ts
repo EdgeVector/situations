@@ -9,17 +9,41 @@ export const object = (value: unknown): ObjectValue =>
 export const payload = (value: unknown): ObjectValue =>
   object(object(value).data ?? value);
 
+// API 13 (lastdb#803) is the first node that owns every schema and refuses a
+// home with the old shared-value layout at startup. lastdb stage 2 stops
+// sending `independent_fields` in node replies (lastdb#901 is stage 1, which
+// still sends it). So a MISSING key means "owned" only on API >= 13; an older
+// node that omits it (API <= 7 never sent it) is still refused. A present key
+// keeps its old meaning: only `true` is owned, explicit `false` is not.
+export const OWNED_BY_DEFAULT_API_VERSION = 13;
+
+/** `api_version` from a `GET /api/version` body (bare or `data` envelope); 0 when absent or malformed. */
+export function nodeApiVersion(version: unknown): number {
+  const value = payload(version).api_version;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : 0;
+}
+
+/** Does this node schema entry (list, detail, or declare reply) own its values? */
+export function ownsValues(entry: unknown, apiVersion: number): boolean {
+  const flag = object(entry).independent_fields;
+  if (flag === undefined) return apiVersion >= OWNED_BY_DEFAULT_API_VERSION;
+  return flag === true;
+}
+
 export function requireOwnedHome(directory: unknown, version: unknown): void {
   const data = payload(directory);
   if (data.ready !== true || !Array.isArray(data.schemas))
     throw new Error(
       "The schema directory is incomplete. No schema was declared.",
     );
+  const apiVersion = nodeApiVersion(version);
   if (
     data.schemas.some(
       (item) =>
         object(item).owner_app_id === OWNER_APP_ID &&
-        object(item).independent_fields !== true,
+        !ownsValues(item, apiVersion),
     )
   ) {
     throw new Error(
@@ -43,10 +67,11 @@ export function requireOwnedHome(directory: unknown, version: unknown): void {
 export function ownedDeclaration(
   value: unknown,
   name: string,
+  apiVersion: number,
 ): { identity: string; runtime: string } {
   const reply = payload(value);
   if (
-    reply.independent_fields !== true ||
+    !ownsValues(reply, apiVersion) ||
     reply.app_id !== OWNER_APP_ID ||
     reply.schema_name !== `${OWNER_APP_ID}/${name}` ||
     typeof reply.canonical !== "string" ||

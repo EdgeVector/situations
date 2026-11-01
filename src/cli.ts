@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { convertSchemaValues } from "./schema-conversion.ts";
 import { canonicalSchema } from "./canonical-vocabulary.ts";
 import { canonicalProfilesForHashes } from "./init-schema.ts";
 import { APP_SCHEMAS } from "./schema-layout.ts";
@@ -73,7 +72,6 @@ Usage:
   situations <command> [options]
 
 Commands:
-  schema-values-convert  explicitly convert existing schema-owned values
   init                 declare eight owned schemas and save their runtime addresses
   schema               print the exact definitions for the eight app record types
   doctor               check the index layout: schemas, legacy copy, drift, unreadable entries (read only)
@@ -111,8 +109,6 @@ Compatibility: fsituations remains an alias during the migration.`;
 
 export function usageFor(command: string): string {
   switch (command) {
-    case "schema-values-convert":
-      return "situations schema-values-convert [--apply --maintenance] [--abort] [--config PATH]\nPlan by default. Apply pauses node requests and converts only the exact saved app scope.";
     case "init":
       return `situations init
 
@@ -125,11 +121,10 @@ Options:
   --notice-schema-hash <hash>  assert the canonical Notice definition identity
   --config <path>              write config path
 
-Setup requires owned_app_schemas_v1, independent_hash_range_v1, and eight
-registered definitions in schema service. It saves the definition identities
-separately from the runtime addresses.
-Existing shared values require schema-values-convert on a compatible release
-before setup or the engine removal upgrade. No unsupported fallback follows.`;
+Setup requires LastDB API 13 or later, owned_app_schemas_v1,
+independent_hash_range_v1, and eight registered definitions in schema service.
+It saves the definition identities separately from the runtime addresses.
+An older node is refused. No unsupported fallback follows.`;
     case "put":
       return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
@@ -341,8 +336,6 @@ async function main(argv: string[]): Promise<number> {
       return schemaCmd(rest);
     case "init":
       return await initCmd(rest);
-    case "schema-values-convert":
-      return await schemaValuesConvertCmd(rest);
     case "doctor":
       return await doctorCmd(rest);
     case "put":
@@ -490,15 +483,6 @@ function schemaCmd(rest: string[]): number {
   return 0;
 }
 
-async function schemaValuesConvertCmd(rest:string[]):Promise<number> {
-  const parsed=parseArgs({args:rest,options:{config:{type:"string"},apply:{type:"boolean"},maintenance:{type:"boolean"},abort:{type:"boolean"},help:{type:"boolean",short:"h"}},allowPositionals:false});
-  if(parsed.values.help){console.log(usageFor("schema-values-convert"));return 0;}
-  const configPath=parsed.values.config??defaultConfigPath();
-  const {node}=loadCtx({configPath});
-  const report=await convertSchemaValues(node,configPath,{apply:parsed.values.apply,maintenance:parsed.values.maintenance,abort:parsed.values.abort});
-  console.log(JSON.stringify(report,null,2));return 0;
-}
-
 async function initCmd(rest: string[]): Promise<number> {
   const parsed = parseArgs({
     args: rest,
@@ -521,7 +505,6 @@ async function initCmd(rest: string[]): Promise<number> {
   }
 
   const cfgPath = parsed.values.config ?? defaultConfigPath();
-  if(existsSync(cfgPath+".conversion.json"))throw new Error("Resume the saved app conversion before init.");
   const previousConfig=existsSync(cfgPath)?readFileSync(cfgPath,"utf8"):null;
   const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];

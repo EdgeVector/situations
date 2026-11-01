@@ -1,4 +1,4 @@
-import { requireOwnedHome, ownedDeclaration, payload, nodeApiVersion, ownsValues } from "./schema-mode.ts";
+import { requireOwnedHome, ownedDeclaration, payload } from "./schema-mode.ts";
 import { canonicalSchema, profilesFor } from "./canonical-vocabulary.ts";
 import { fieldAliasTransport, encodeFieldRequest, decodeFieldReply, localSchemaMetadata, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import type { SchemaDefinition } from "./schemas.ts";
@@ -96,7 +96,6 @@ type LoadedSchema = {
   owner_app_id: string;
   fields: string[];
   identity_hash: string;
-  independent_fields: boolean;
 };
 
 type AppSchemaDeclaration = {
@@ -272,19 +271,12 @@ export function newNodeClient(opts: {
     }
   }
 
-  // One `GET /api/version` read per client. Schema ownership needs the node
-  // API version only when a reply omits `independent_fields` (see ownsValues).
-  let versionRead: Promise<{ status: number; body: unknown }> | undefined;
-  const readVersion = () => versionRead ??= callJson("GET","/api/version");
-
-  // Resolves to the node API version after the owned-home check passes.
-  let schemaReadiness: Promise<number> | undefined;
-  const requireOwnedSetup = (): Promise<number> => schemaReadiness ??= (async () => {
-    const [directory,version]=await Promise.all([callJson("GET","/api/schemas"),readVersion()]);
+  let schemaReadiness: Promise<void> | undefined;
+  const requireOwnedSetup = (): Promise<void> => schemaReadiness ??= (async () => {
+    const [directory,version]=await Promise.all([callJson("GET","/api/schemas"),callJson("GET","/api/version")]);
     if (directory.status!==200) throw mapNodeError(directory.status,directory.body,"/api/schemas");
     if (version.status!==200) throw mapNodeError(version.status,version.body,"/api/version");
     requireOwnedHome(directory.body,version.body);
-    return nodeApiVersion(version.body);
   })();
 
   return {
@@ -319,15 +311,9 @@ export function newNodeClient(opts: {
       if (directory.ready!==true || !Array.isArray(directory.schemas)) {
         throw new FsituationsError({code:"schema_catalog_invalid",message:"The schema directory is incomplete."});
       }
-      const raw=directory.schemas.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null);
-      // Read the node API version only when an entry omits the ownership key.
-      // A node without the version route (404) reads as API 0: not owned.
-      let apiVersion = 0;
-      if (raw.some((item) => item.independent_fields === undefined)) {
-        const version = await readVersion();
-        apiVersion = version.status === 200 ? nodeApiVersion(version.body) : 0;
-      }
+      const raw=directory.schemas;
       return raw
+        .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
         .map((item) => {
           const schema = localSchemaMetadata(item,fieldProfiles);
           return ({
@@ -335,7 +321,6 @@ export function newNodeClient(opts: {
           descriptive_name: stringField(schema, "descriptive_name"),
           owner_app_id: stringField(schema, "owner_app_id"),
           identity_hash:stringField(schema,"identity_hash"),
-          independent_fields:ownsValues(schema,apiVersion),
           fields: Array.isArray(schema.fields)
             ? schema.fields.filter((field): field is string => typeof field === "string")
             : [],
@@ -343,7 +328,7 @@ export function newNodeClient(opts: {
     },
     async declareAppSchema(appId, schema) {
       const local = schema as unknown as SchemaDefinition;
-      const apiVersion = await requireOwnedSetup();
+      await requireOwnedSetup();
       if (canonicalVocabulary) {
         schema = canonicalSchema(local) as unknown as Record<string,unknown>;
       }
@@ -352,7 +337,7 @@ export function newNodeClient(opts: {
         schema,
       });
       if (status !== 200) throw mapNodeError(status, body, "/api/apps/declare-schema");
-      const binding=ownedDeclaration(body,local.name,apiVersion);
+      const binding=ownedDeclaration(body,local.name);
       const b=payload(body);
       const canonical=binding.runtime;
       const schemaName=String(b.schema_name);

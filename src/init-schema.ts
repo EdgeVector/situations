@@ -1,5 +1,5 @@
 import { APP_SCHEMAS } from "./schema-layout.ts";
-import { requireOwnedHome } from "./schema-mode.ts";
+import { nodeOwnsValues, requireOwnedHome } from "./schema-mode.ts";
 import { profilesFor } from "./canonical-vocabulary.ts";
 import type { FieldAliasProfiles } from "./field-alias-transport.ts";
 import { FsituationsError, type NodeClient } from "./client.ts";
@@ -73,7 +73,7 @@ export async function resolveLoadedLayoutHashes(
   index_entry: string | null;
   notice_history: string | null;
 }> {
-  const loaded = await node.listSchemas();
+  const loaded = await listOwnedSchemas(node);
   return {
     // The legacy Index schema: loaded when any schema of ours carries its name.
     index: pickLoadedHash(loaded, { key: "index", schema: indexSchema }),
@@ -98,10 +98,20 @@ async function resolveLoadedHash(
   node: NodeClient,
   target: SchemaTarget,
 ): Promise<string | null> {
-  return pickLoadedHash(await node.listSchemas(), target);
+  return pickLoadedHash(await listOwnedSchemas(node), target);
 }
 
 type LoadedSchemas = Awaited<ReturnType<NodeClient["listSchemas"]>>;
+
+// A reader or writer uses a loaded schema only on a node that owns the values
+// of every schema. An older node lists nothing here, the same as before setup.
+async function listOwnedSchemas(node: NodeClient): Promise<LoadedSchemas> {
+  const [loaded, version] = await Promise.all([
+    node.listSchemas(),
+    node.rawCall("GET", "/api/version"),
+  ]);
+  return version.status === 200 && nodeOwnsValues(version.body) ? loaded : [];
+}
 
 function pickLoadedHash(
   loaded: LoadedSchemas,
@@ -110,7 +120,6 @@ function pickLoadedHash(
   const candidates = loaded.filter(
     (schema) =>
       schema.owner_app_id === OWNER_APP_ID &&
-      schema.independent_fields === true &&
       schema.descriptive_name === target.schema.schema.descriptive_name,
   );
   const full = candidates.find((schema) =>
@@ -118,7 +127,7 @@ function pickLoadedHash(
   );
   // Prefer descriptive identity match; name may be the namespaced string or the
   // canonical hash depending on node version.
-  // A reader or writer requires complete fields and an owned runtime schema.
+  // A reader or writer requires complete fields.
   return full?.name ?? null;
 }
 

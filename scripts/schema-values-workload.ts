@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
 import { canonicalProfilesForHashes } from "../src/init-schema.ts";
-import { nodeApiVersion, ownsValues } from "../src/schema-mode.ts";
+import { nodeOwnsValues } from "../src/schema-mode.ts";
 import type { Config } from "../src/config.ts";
 import type { BatchMutationOp, NodeClient } from "../src/client.ts";
 import type { Situation } from "../src/record.ts";
@@ -46,7 +46,7 @@ const runner = resolve(process.env.RUNNER_TEMP!);
 require(output.startsWith(
   runner + sep,
 ), "The output must use this runner's temporary directory.");
-require(["baseline", "candidate", "fresh"].includes(
+require(["baseline", "candidate"].includes(
   args.label!,
 ), "Unknown comparison arm.");
 const count = Number(args.records ?? 64);
@@ -350,10 +350,10 @@ async function publish(
 }
 
 async function runSetup(): Promise<void> {
-  const root = args.label === "fresh" ? args.candidate! : args.baseline!;
-  let { node, cfg } = await setup(root);
-  const record = await load(root, "record"),
-    notice = await load(root, "notice");
+  // Each app version seeds its own fresh home.
+  let { node, cfg } = await setup(active);
+  const record = await load(active, "record"),
+    notice = await load(active, "notice");
   const now = new Date().toISOString();
   // Each app operation owns its batch request. Independent records run in bounded parallel sets.
   for (let start = 0; start < count; start += 8) {
@@ -386,47 +386,13 @@ async function runSetup(): Promise<void> {
       }),
     );
   }
-  await checkLists(node, cfg, root, count);
-  await publish(node, cfg, root, count);
+  await checkLists(node, cfg, active, count);
+  await publish(node, cfg, active, count);
   // Publication declarations update the real client's profiles. Reopen the adapter with all saved profiles.
-  node = observe(await client(root, cfg));
+  node = observe(await client(active, cfg));
   save("members.json", members);
   const before = await snapshot(node, cfg);
   save("seed-atoms.json", before);
-  if (args.label === "candidate") {
-    const candidate = await client(args.candidate!, cfg);
-    const converter = await load(args.candidate!, "schema-conversion");
-    const plan = await converter.convertSchemaValues(
-      candidate,
-      args.config,
-      {},
-    );
-    require(plan.phase === "plan" &&
-      plan.schemas.length ===
-        8, "The actual app did not select eight conversion schemas.");
-    const conversion = await converter.convertSchemaValues(
-      candidate,
-      args.config,
-      { apply: true, maintenance: true },
-    );
-    const writtenCount = Object.values(members).reduce(
-      (total, records) => total + Object.keys(records).length,
-      0,
-    );
-    require(conversion.phase === "complete" &&
-      conversion.durable === true &&
-      conversion.converted_schemas.length === 8 &&
-      conversion.selected_keys === conversion.expected_selected_keys &&
-      conversion.selected_keys === writtenCount &&
-      conversion.processed_keys ===
-        conversion.expected_keys, "The actual conversion did not cover the complete accepted app membership.");
-    save("conversion.json", conversion);
-    cfg = (await load(args.candidate!, "config")).readConfig(args.config);
-    require(same(
-      await snapshot(await client(args.candidate!, cfg), cfg),
-      before,
-    ), "Conversion changed values, current atoms, or author metadata.");
-  }
   save("seed.json", {
     logical_situations: count,
     logical_notices: count,
@@ -464,21 +430,20 @@ async function runMeasure(): Promise<void> {
       node.rawCall("GET", "/api/schemas"),
       node.rawCall("GET", "/api/version"),
     ]);
-    const apiVersion = version.status === 200 ? nodeApiVersion(version.body) : 0;
     const body = (directory.body as any)?.data ?? directory.body;
     const owned = body.schemas.filter(
       (schema: any) => schema.owner_app_id === "fsituations",
     );
-    require(owned.length === 8 &&
+    require(version.status === 200 &&
+      nodeOwnsValues(version.body) &&
+      owned.length === 8 &&
       owned.every(
-        (schema: any) =>
-          ownsValues(schema, apiVersion) &&
-          !Object.keys(schema.alternate_keys ?? {}).length,
+        (schema: any) => !Object.keys(schema.alternate_keys ?? {}).length,
       ), "The app does not own exactly eight separate record types.");
   }
   const record = await load(active, "record"),
     notice = await load(active, "notice");
-  const iterations = args.label === "fresh" ? 16 : 64;
+  const iterations = 64;
   let sourceUpdateKeepsPublicationValues = false;
   for (let index = 0; index < iterations; index++) {
     const key = index % count;

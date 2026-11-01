@@ -19,7 +19,7 @@ env:
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:
-    name: Actual app conversion and latency
+    name: Actual app latency
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -88,7 +88,7 @@ jobs:
           cd "$RUNNER_TEMP/situations-binaries"
           sha256sum daemon-before daemon-after > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - name: Compare exported app functions across conversion and upgrade
+      - name: Compare exported app functions on fresh homes
         run: |
           python3 candidate/scripts/schema-values-latency.py \
             --baseline "$GITHUB_WORKSPACE/baseline" --baseline-revision "$APP_BEFORE" \

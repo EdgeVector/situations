@@ -21,12 +21,11 @@ const schemas = APP_SCHEMAS.map(({ definition }) =>
 if (values.export) {
   if (values.baseline || values.output)
     throw Error("Choose export or CI verification.");
-  // Registration owns canonical definitions. Value ownership belongs to the node declaration.
   writeFileSync(
     values.export,
     JSON.stringify(
       schemas.map((schema) => ({
-        schema: { ...schema, independent_fields: false },
+        schema,
         mutation_mappers: {},
       })),
       null,
@@ -83,7 +82,7 @@ if (values.export) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            schema: { ...schema, independent_fields: false },
+            schema,
             mutation_mappers: {},
           }),
           signal: AbortSignal.timeout(60000),

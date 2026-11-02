@@ -1,0 +1,48 @@
+{
+  "app_id": "situations",
+  "version": "0.1.0",
+  "source": "https://github.com/EdgeVector/situations.git",
+  "metadata": {
+    "display_name": "situations",
+    "description": "Situations app over LastDB: active operational posture, phases, agent preflight policy, and non-blocking agent-impact notices.",
+    "homepage_url": "https://github.com/EdgeVector/situations"
+  },
+  "run": {
+    "runtime": "bun",
+    "entrypoint": "src/cli.ts"
+  },
+  "schemas": [],
+  "install": {
+    "prepare": [
+      {
+        "argv": [
+          "bun",
+          "install",
+          "--frozen-lockfile"
+        ],
+        "timeout_s": 300
+      }
+    ],
+    "links": [
+      {
+        "source": "bin/registry-situations",
+        "command": "situations"
+      },
+      {
+        "source": "bin/registry-fsituations",
+        "command": "fsituations"
+      }
+    ],
+    "probe": [
+      {
+        "argv": [
+          "./bin/registry-situations",
+          "--help"
+        ],
+        "timeout_s": 30
+      }
+    ],
+    "post_install": [],
+    "requires": []
+  }
+}

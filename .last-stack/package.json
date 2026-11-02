@@ -1,0 +1,12 @@
+{
+  "artifacts": [
+    {
+      "app": "situations",
+      "platform": "darwin-arm64",
+      "paths": [
+        "dist",
+        "lastdb-app.json"
+      ]
+    }
+  ]
+}

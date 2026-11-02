@@ -83,7 +83,7 @@ Commands:
   notices              list recent notices (never blocks preflight)
   publish-status       write slim posture+notices snapshot to LastDB (--json)
   deliver-status       publish + stage a situations slice delivery; --approve sends it
-  which                print install/host-track path information
+  which                print registry install path information
   version              print version
   help                 print this help
 
@@ -296,7 +296,7 @@ Examples:
       return `situations which [--json] [--check]
 
 Print the executable path and checkout root for the current situations install.
---check exits nonzero when the executable does not resolve under ~/.host-track/situations.`;
+--check exits nonzero when the executable does not resolve under ~/.local/share/lastdb-apps/situations.`;
     case "version":
       return `situations version
 
@@ -387,17 +387,17 @@ function whichCmd(rest: string[]): number {
     : realpathOrSelf(process.execPath);
   const sourcePath = isSourceFile ? realpathOrSelf(importMetaPath) : executablePath;
   const checkoutRoot = artifactOrSourceRoot(sourcePath);
-  const expectedRootRaw = resolve(Bun.env.HOME ?? "", ".host-track", "apps", "situations");
+  const expectedRootRaw = resolve(Bun.env.LASTDB_APPS_ROOT ?? resolve(Bun.env.HOME ?? "", ".local/share/lastdb-apps"), "situations");
   const expectedRoot = existsSync(expectedRootRaw) ? realpathOrSelf(expectedRootRaw) : expectedRootRaw;
-  const inHostTrack = checkoutRoot === expectedRoot || checkoutRoot.startsWith(`${expectedRoot}/`);
+  const inRegistry = checkoutRoot === expectedRoot || checkoutRoot.startsWith(`${expectedRoot}/`);
   const result = {
     app: "situations",
     command: commandName(isSourceFile ? process.argv[1] ?? "situations" : executablePath),
     executable_path: executablePath,
     source_path: sourcePath,
     checkout_root: checkoutRoot,
-    expected_host_track: expectedRoot,
-    in_host_track: inHostTrack,
+    expected_registry: expectedRoot,
+    in_registry: inRegistry,
   };
 
   if (parsed.values.json) {
@@ -405,11 +405,11 @@ function whichCmd(rest: string[]): number {
   } else {
     console.log(`source_path=${sourcePath}`);
     console.log(`checkout_root=${checkoutRoot}`);
-    console.log(`expected_host_track=${expectedRoot}`);
-    console.log(`in_host_track=${inHostTrack}`);
+    console.log(`expected_registry=${expectedRoot}`);
+    console.log(`in_registry=${inRegistry}`);
   }
 
-  return parsed.values.check && !inHostTrack ? 1 : 0;
+  return parsed.values.check && !inRegistry ? 1 : 0;
 }
 
 function artifactOrSourceRoot(sourcePath: string): string {

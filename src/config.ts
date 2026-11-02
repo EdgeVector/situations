@@ -22,33 +22,15 @@ export type Config = {
 
 const SOCKET_FILE_NAME = "folddb.sock";
 
-// Resolve the node data-home when no explicit socket/home override is set.
-// The FoldDB→LastDB rebrand (node v0.15.1+) moved the brew/CLI node's data home
-// from `~/.folddb` to `~/.lastdb`, while the legacy desktop app still uses
-// `~/.folddb`. Prefer whichever default home has a LIVE control socket on disk
-// (that's the node actually running), `~/.lastdb` first; fall back to directory
-// existence, `~/.lastdb` first, so a pre-launch machine still points somewhere
-// real. Mirrors fbrain's `resolveDefaultNodeHome` so all three CLIs derive the
-// same root on a mixed-version machine.
-function resolveDefaultNodeHome(base: string): string {
-  const lastdb = join(base, ".lastdb");
-  const folddb = join(base, ".folddb");
-  if (existsSync(join(lastdb, "data", SOCKET_FILE_NAME))) return lastdb;
-  if (existsSync(join(folddb, "data", SOCKET_FILE_NAME))) return folddb;
-  if (existsSync(lastdb)) return lastdb;
-  return folddb;
-}
 
 export function resolveSocketPath(cfg?: { nodeSocketPath?: string }): string {
   const envOverride = process.env.FOLDDB_SOCKET_PATH;
   if (envOverride && envOverride.length > 0) return envOverride;
   if (cfg?.nodeSocketPath && cfg.nodeSocketPath.length > 0) return cfg.nodeSocketPath;
-  // `LASTDB_HOME`/`FOLDDB_HOME` remain explicit overrides; absent those, probe
-  // for the live node home (prefers `~/.lastdb`) rather than hardcoding the
-  // now-retired `~/.folddb` default.
-  const homeOverride = process.env.LASTDB_HOME ?? process.env.FOLDDB_HOME;
-  const home =
-    homeOverride && homeOverride.length > 0 ? homeOverride : resolveDefaultNodeHome(homedir());
+  // The node home is `LASTDB_HOME` when it is set, else `~/.lastdb`, the same
+  // rule as the node's own resolver.
+  const homeOverride = process.env.LASTDB_HOME;
+  const home = homeOverride && homeOverride.length > 0 ? homeOverride : join(homedir(), ".lastdb");
   return join(home, "data", SOCKET_FILE_NAME);
 }
 

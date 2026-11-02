@@ -84,7 +84,7 @@ def render(args, arms):
              f"Baseline daemon: `{args.daemon_before_revision}`. Candidate daemon: `{args.daemon_after_revision}`.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
-             "The proof checks accepted app-written keys, full values, current atom identities, author metadata, range membership, repeated setup, and flush/reopen.",
+             "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",
              "The legacy summary schema is empty because the current product no longer writes it.",
              "Cloud sync stays OFF. The workflow does not invoke the Situations CLI or alter app identity gates.",
              "Times cover the complete exported app operation and accepted-write accounting. They exclude the verifier and process startup.", "",

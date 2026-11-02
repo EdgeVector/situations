@@ -390,7 +390,7 @@ export function newNodeClient(opts: {
         const response=await callJson("POST","/api/query",requestBody);
         if(response.status!==200)throw mapNodeError(response.status,response.body,"/api/query");
         const result=payload(response.body);
-        if(result.ok!==true||result.unresolved_rows!==0||typeof result.has_more!=="boolean"||!Array.isArray(result.results))throw new Error("The query is incomplete or unresolved.");
+        if(result.ok!==true||typeof result.has_more!=="boolean"||!Array.isArray(result.results))throw new Error("The query is incomplete.");
         for(const item of result.results){
           const row=item as QueryRow;
           if(!row||typeof row!=="object"||!row.key||typeof row.key.hash!=="string"||!(row.key.range===null||typeof row.key.range==="string")||!row.fields||typeof row.fields!=="object")throw new Error("The query returned a malformed record.");

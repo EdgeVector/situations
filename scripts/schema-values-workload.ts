@@ -184,7 +184,7 @@ async function snapshot(
 ): Promise<Record<string, unknown>> {
   // The same untimed verifier serves both sources. Old app clients lack rawCall.
   node = await client(args.candidate!, cfg);
-  const atoms: Record<string, unknown> = {};
+  const values: Record<string, unknown> = {};
   const pending = APP_SCHEMAS.flatMap(({ key, definition }) => {
     const address = cfg.schemaHashes[key];
     require(address, `The saved ${key} runtime address is absent.`);
@@ -227,9 +227,8 @@ async function snapshot(
       require(item.status === 200 &&
         response?.ok === true &&
         response.has_more === false &&
-        response.unresolved_rows === 0 &&
         response.results?.length ===
-          1, "A written record is absent, unresolved, or ambiguous.");
+          1, "A written record is absent or ambiguous.");
       const row = response.results[0];
       require(same(row.key, record.key) &&
         same(
@@ -241,17 +240,13 @@ async function snapshot(
           row.fields,
           record.fields,
         ), `The actual ${key} values differ from accepted app writes.`);
-      for (const field of definition.fields) {
-        const info = row.metadata?.[field];
-        require(typeof info?.atom_uuid === "string" &&
-          info.atom_uuid, "A current field atom is absent.");
-        atoms[`${key}/${stable(record.key)}/${field}`] = {
-          value_sha256: sha(row.fields[field]),
-          atom_uuid: info.atom_uuid,
-          writer_pubkey: info.writer_pubkey ?? null,
-          metadata: info.metadata ?? null,
-        };
-      }
+      // A record has one metadata block, or null.
+      values[`${key}/${stable(record.key)}`] = {
+        value_sha256: Object.fromEntries(
+          definition.fields.map((field) => [field, sha(row.fields[field])]),
+        ),
+        metadata: row.metadata ?? null,
+      };
     }
   }
   // Entry membership has an explicit hash and range. Compare every range page to the accepted key set.
@@ -280,7 +275,7 @@ async function snapshot(
       }),
     );
   }
-  return atoms;
+  return values;
 }
 
 async function checkLists(
@@ -392,7 +387,7 @@ async function runSetup(): Promise<void> {
   node = observe(await client(active, cfg));
   save("members.json", members);
   const before = await snapshot(node, cfg);
-  save("seed-atoms.json", before);
+  save("seed-values.json", before);
   save("seed.json", {
     logical_situations: count,
     logical_notices: count,
@@ -403,7 +398,7 @@ async function runSetup(): Promise<void> {
         Object.keys(members[cfg.schemaHashes[key]!] ?? {}).length,
       ]),
     ),
-    current_atoms: Object.keys(before).length,
+    current_records: Object.keys(before).length,
     source_hashes: cfg.schemaHashes,
   });
 }
@@ -414,8 +409,8 @@ async function runMeasure(): Promise<void> {
   let node = observe(await client(active, cfg));
   require(same(
     await snapshot(node, cfg),
-    read("seed-atoms.json"),
-  ), "Reopen changed values, current atoms, or author metadata.");
+    read("seed-values.json"),
+  ), "Reopen changed values or record metadata.");
   const beforeCfg = stable(cfg.schemaHashes);
   if (args.label !== "baseline") {
     const repeated = await setup(active, cfg);
@@ -424,8 +419,8 @@ async function runMeasure(): Promise<void> {
     require(stable(cfg.schemaHashes) === beforeCfg &&
       same(
         await snapshot(node, cfg),
-        read("seed-atoms.json"),
-      ), "Repeat setup changed addresses or current atoms.");
+        read("seed-values.json"),
+      ), "Repeat setup changed addresses or current values.");
     const [directory, version] = await Promise.all([
       node.rawCall("GET", "/api/schemas"),
       node.rawCall("GET", "/api/version"),
@@ -500,15 +495,15 @@ async function runMeasure(): Promise<void> {
   await checkLists(node, cfg, active, count);
   const final = await snapshot(node, cfg);
   save("members.json", members);
-  save("final-atoms.json", final);
+  save("final-values.json", final);
   save("result.json", {
     label: args.label,
     complete: true,
     records: count,
     samples_ms: samples,
-    seed_atoms: Object.keys(read("seed-atoms.json")).length,
-    final_atoms: Object.keys(final).length,
-    unchanged_seed_atoms_on_reopen: true,
+    seed_records: Object.keys(read("seed-values.json")).length,
+    final_records: Object.keys(final).length,
+    unchanged_seed_values_on_reopen: true,
     repeat_setup: args.label !== "baseline",
     complete_membership: true,
     source_update_keeps_publication_values: sourceUpdateKeepsPublicationValues,
@@ -521,8 +516,8 @@ else if (args.mode === "verify") {
   const cfg = (await load(active, "config")).readConfig(args.config);
   require(same(
     await snapshot(await client(active, cfg), cfg),
-    read("final-atoms.json"),
-  ), "Final flush/reopen changed data or current atoms.");
+    read("final-values.json"),
+  ), "Final flush/reopen changed data or current values.");
   await checkLists(await client(active, cfg), cfg, active, count);
   save("final-reopen.json", { complete: true });
 } else throw Error("Unknown workload phase.");

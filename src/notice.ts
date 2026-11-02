@@ -9,7 +9,7 @@ import {
   type NoticeSeverityHint,
 } from "./schemas.ts";
 import { nowIso, validateSlug } from "./record.ts";
-import { atomBytes } from "./atom-size.ts";
+import { fieldValueBytes } from "./field-value-size.ts";
 import {
   commitOps,
   dayOf,
@@ -302,7 +302,7 @@ function noticeEntryRange(notice: { created_at: string; at: string; slug: string
  * sorts on, plus the whole notice when it fits.
  *
  * A reader that needs the notice itself would otherwise hydrate it from the
- * Notice record, and one notice is 14 fields = 14 atoms the node must load (and
+ * Notice record, and one notice is 14 fields the node must load (and
  * keep in its warm set) against ONE for the entry. So the entry carries the
  * notice (`notice`) whenever the whole entry stays inside the 4 KiB entry
  * budget, which every real notice does (about 0.9 KiB). A notice that does not
@@ -333,7 +333,7 @@ function noticeEntryPayload(notice: Notice): NoticeEntryPayload {
     scope_systems: [...notice.scope_systems],
     scope_apps: [...notice.scope_apps],
   };
-  while (atomBytes(JSON.stringify(entry)) > INDEX_ENTRY_MAX_BYTES) {
+  while (fieldValueBytes(JSON.stringify(entry)) > INDEX_ENTRY_MAX_BYTES) {
     const longer =
       entry.scope_systems.length >= entry.scope_apps.length ? entry.scope_systems : entry.scope_apps;
     if (longer.length === 0) break;
@@ -342,7 +342,7 @@ function noticeEntryPayload(notice: Notice): NoticeEntryPayload {
   }
   if (!entry.partial) {
     const withNotice = { ...entry, notice };
-    if (atomBytes(JSON.stringify(withNotice)) <= INDEX_ENTRY_MAX_BYTES) return withNotice;
+    if (fieldValueBytes(JSON.stringify(withNotice)) <= INDEX_ENTRY_MAX_BYTES) return withNotice;
   }
   return entry;
 }
@@ -615,7 +615,7 @@ export async function listNotices(
  *                     from `at`, so every other live notice has an `at` in those
  *                     two days.
  *
- * There is no cached "recent" row any more: such a row was one atom rewritten by
+ * There is no cached "recent" row any more: such a row was one field value rewritten by
  * every writer, two writers lost a notice from it for good, and it had to be
  * capped. A day partition already carries the notice.
  *

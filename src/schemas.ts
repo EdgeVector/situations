@@ -211,8 +211,8 @@ const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
  * LEGACY, read-only. This schema held every list of this app as one JSON blob
  * per key (`active_situations`, `recent_notices`, `notice_history_day:<day>`,
  * `situation_history_day:<day>`, `notice_history_days`,
- * `situation_history_days`). One field value is one atom; those blobs measured
- * 66 to 161 KB and grew 40 KB in a day, past the node's atom ceiling, and every
+ * `situation_history_days`). Those blobs measured
+ * 66 to 161 KB and grew 40 KB in a day, past the node's field value ceiling, and every
  * notice rewrote a whole blob. Nothing writes this schema any more. Each blob is
  * read once to seed `IndexEntry` / `NoticeHistory`, never rewritten, never
  * deleted. The schema stays declared because that read needs it.
@@ -327,8 +327,7 @@ export const indexEntrySchema: AddSchemaRequest = {
  * update rewrites the same key. The slug is the text after the first `#` (a slug
  * has none). The day is the UTC day of the notice's `at`.
  *
- * PROPOSED TTL: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md
- * 3.5). THIS CODE SETS NO POLICY. The manifest TTL step is built separately, and
+ * PROPOSED TTL: `Notice` 90 days. THIS CODE SETS NO POLICY. The manifest TTL step is built separately, and
  * a policy has no backfill and must name BOTH installed names of this schema
  * (`fsituations/NoticeHistory` and its canonical hash). Entries written before a
  * policy exists will never expire.

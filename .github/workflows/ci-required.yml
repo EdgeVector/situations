@@ -50,19 +50,6 @@ jobs:
   # Push to main only. Builds the compiled dist/* binaries on a macOS runner
   # (bun --compile output is platform specific) and uploads ht-artifact-<sha>.
   # app registry refresh pulls it on the Mac. Brain: design-github-artifact-publish-path
-  publish:
-    name: publish
-    needs: [ci-required]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    permissions:
-      contents: read
-    uses: EdgeVector/last-stack/.github/workflows/registry-app-package.yml@main
-    with:
-      setup-bun: true
-      build-command: "bun install --frozen-lockfile && bun run build && dist/situations --help >/dev/null"
-      runs-on: macos-latest
-      config: .last-stack/package.json
-
   registry-commit:
     name: Registry commit identity
     needs: [ci-required]

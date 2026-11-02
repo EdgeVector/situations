@@ -288,9 +288,8 @@ and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.
 
 ### Index layout (a list that grows is one record per entry)
 
-A LastDB node refuses one atom above its ceiling (256 KiB by default since
-lastdb#154; HTTP 413 `atom_content_too_large`), and one field value is one
-atom. A list that grows is therefore never one field. The old `fsituations/Index`
+A LastDB node refuses one field value above its ceiling (256 KiB by default;
+HTTP 413 `field_value_too_large`). A list that grows is therefore never one field. The old `fsituations/Index`
 schema kept every list as one JSON blob and its blobs measured 66 to 161 KB and
 grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
@@ -313,14 +312,14 @@ grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
 A partition is read with one range query and grown with one small write. An
 entry carries the whole notice or situation only when it stays under 4 KiB,
-which every real one does (about 1 KiB). One record is 14 to 21 fields, and each
-field is an atom the node loads and keeps in its warm set, against one atom for
+which every real one does (about 1 KiB). One record is 14 to 21 fields, and the
+node loads each field and keeps it in its warm set, against one field for
 the entry. A record that does not fit is read from its own schema by slug with
 one multi-get (`HashRangeKeys`). `put` and `notice` write the record and its
 entries in ONE `POST /api/mutations/batch`.
 
 **A write touches only the entry of the record it writes.** Several devices may
-write at once; per atom the last writer wins. A writer therefore never reads a
+write at once; per field the newer stamp wins. A writer therefore never reads a
 list, rewrites it, or deletes another entry (a stale reader's delete would have
 the later write time and win). A reader drops an entry that has expired by its
 own clock.
@@ -345,7 +344,7 @@ empty answer (the legacy blob is read twice before "no row" is believed).
 
 #### Default notices list
 
-There is no cached "recent notices" row any more: it was one atom rewritten by
+There is no cached "recent notices" row any more: it was one field value rewritten by
 every writer (two writers lost a notice from it for good) and it had to be
 capped. `situations notices` reads the day partitions that can hold the notice:
 `--all` every day, `--since <window>` the days of the window, and with neither
@@ -379,8 +378,7 @@ day does not read the legacy blob for a listed id with no entry (that entry is a
 expired one; reading the blob would bring it back), so `notices --all` never
 fails on it.
 
-Proposed policy: `Notice` 90 days (docs/design-lastdb-atom-ceiling-and-lifecycle.md,
-section 3.5). The manifest TTL step is built separately. A policy has no
+Proposed policy: `Notice` 90 days. The manifest TTL step is built separately. A policy has no
 backfill, must exist before the first write, and must name BOTH installed names
 of the schema (`fsituations/NoticeHistory` and its canonical hash). Entries
 written before a policy exists will never expire.
@@ -402,7 +400,7 @@ it contained. Rules:
    `active_situations` the copy is UNTRUSTED (`src: legacy`, no copy of the
    record): a stale process can write it with a LATER write time than a newer
    entry, so a reader decides liveness from the RECORD (it probes `status` and
-   `expires_at`, 2 atoms, and reads the record in full only when it is live). A
+   `expires_at`, 2 fields, and reads the record in full only when it is live). A
    situation the new binary `put`s again gets a trusted entry again. A reader
    never promotes an entry itself: a promotion written from an older read of the
    record could overwrite a newer entry (last writer wins).

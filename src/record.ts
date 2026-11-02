@@ -8,7 +8,7 @@ import {
   type Severity,
   type SituationStatus,
 } from "./schemas.ts";
-import { atomBytes } from "./atom-size.ts";
+import { fieldValueBytes } from "./field-value-size.ts";
 import { hasIndexSchema, readIndexPayload, readLegacyRow, requireIndexSchema } from "./index-cache.ts";
 import {
   commitOps,
@@ -577,7 +577,7 @@ function situationHistoryDayKey(day: string): string {
  * The active-set entry (`ActiveEntryPayload`) is read by every preflight. It
  * holds the fields that decide whether the situation is still active, plus the
  * whole situation (`situation`) whenever the entry stays inside the 4 KiB entry
- * budget. One situation is 21 fields = 21 atoms the node must load (and keep in
+ * budget. One situation is 21 fields the node must load (and keep in
  * its warm set) per preflight against ONE for the entry; a typical situation is
  * under 1 KiB. A situation that does not fit (a long `phases_json`) keeps only
  * the deciding fields and is hydrated from its record by slug. The record write
@@ -606,7 +606,7 @@ function activeEntryPayload(situation: Situation): ActiveEntryPayload {
     expires_at: situation.expires_at,
   };
   const withSituation = { ...entry, situation };
-  return atomBytes(JSON.stringify(withSituation)) <= INDEX_ENTRY_MAX_BYTES ? withSituation : entry;
+  return fieldValueBytes(JSON.stringify(withSituation)) <= INDEX_ENTRY_MAX_BYTES ? withSituation : entry;
 }
 
 function objectOf(stored: unknown, where: string): Record<string, unknown> {
@@ -714,7 +714,7 @@ async function hydrateSituations(
   });
 }
 
-/** Only what decides liveness: `status` and `expires_at` (2 atoms, not 21). */
+/** Only what decides liveness: `status` and `expires_at` (2 fields, not 21). */
 type LiveProbe = { status: string; expires_at: string };
 
 async function probeSituations(
@@ -845,7 +845,7 @@ async function listActiveLegacy(
  * Liveness comes from the entry only for a TRUSTED entry (written by `put`, in
  * the same batch as its record). An UNTRUSTED entry (a snapshot copied from an old
  * blob) is decided from the RECORD: its `status` and `expires_at` are probed (2
- * atoms), and only a live one is read in full. So a stale copy with an old expiry
+ * fields), and only a live one is read in full. So a stale copy with an old expiry
  * can never drop a situation whose record is still active, and a resolved one
  * never blocks.
  *

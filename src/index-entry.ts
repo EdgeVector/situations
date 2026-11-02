@@ -3,15 +3,14 @@
 //
 // Why this exists. The `Index` schema kept each list as ONE JSON blob in one
 // field: every notice of a day, every situation of a day, the set of active
-// situations. One field value is one atom, and the node refuses an atom above
-// its ceiling. The day buckets measured 66 to 161 KB on the primary and grew by
+// situations. The node refuses a field value above its ceiling. The day buckets measured 66 to 161 KB on the primary and grew by
 // 40 KB in a day, so each notice rewrote a whole blob. Here a list is a
 // PARTITION: one small record per entry, read with one range query under the
 // partition hash, grown with one small write. No code rewrites or caps a whole
 // list, and no entry is dropped to fit.
 //
-// The database owns conflicts (several devices may write at once; per atom the
-// last writer wins and every write is kept), the app owns the data shape. So:
+// The database owns conflicts (several devices may write at once; per field the
+// newer stamp wins and every write is kept), the app owns the data shape. So:
 // one record per entry, keys two devices never create by accident, an entry is
 // rewritten whole by the code that owns it, and no code reads-modifies-writes a
 // shared list. A write touches only the entry of the record it is writing.
@@ -51,7 +50,7 @@ import {
   type NodeClient,
   type QueryRow,
 } from "./client.ts";
-import { atomBytes } from "./atom-size.ts";
+import { fieldValueBytes } from "./field-value-size.ts";
 import type { Config } from "./config.ts";
 import { readLegacyRow, readLegacyUpdatedAt } from "./index-cache.ts";
 import { resolveLoadedLayoutHashes } from "./init-schema.ts";
@@ -346,10 +345,10 @@ export function putOp(
 ): BatchMutationOp {
   const def = STORES[store];
   const serialized = payload === "" || payload === null ? "" : JSON.stringify(payload);
-  if (atomBytes(serialized) > INDEX_ENTRY_MAX_BYTES) {
+  if (fieldValueBytes(serialized) > INDEX_ENTRY_MAX_BYTES) {
     throw new FsituationsError({
       code: "index_entry_too_large",
-      message: `Index entry ${hash}/${range} is ${atomBytes(serialized)} bytes; the limit is ${INDEX_ENTRY_MAX_BYTES}.`,
+      message: `Index entry ${hash}/${range} is ${fieldValueBytes(serialized)} bytes; the limit is ${INDEX_ENTRY_MAX_BYTES}.`,
       hint: "An entry carries keys and small summary fields only; hydrate the rest from the record.",
     });
   }
@@ -519,7 +518,7 @@ function markerOps(
   let current: string[] = [];
   for (const id of sorted) {
     const probe = { migrated_at: migratedAt, chunk: chunks.length, of: 999, ids: [...current, id] };
-    if (current.length > 0 && atomBytes(JSON.stringify(probe)) > MARKER_CHUNK_BYTES) {
+    if (current.length > 0 && fieldValueBytes(JSON.stringify(probe)) > MARKER_CHUNK_BYTES) {
       chunks.push(current);
       current = [];
     }

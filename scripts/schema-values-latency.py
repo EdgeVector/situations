@@ -44,7 +44,14 @@ def product(args, node, output, label, phase):
     cloud_off(node, output, phase)
 
 
-def arm(args, Node, finish_setup, label, pair):
+def finish_setup(node, output, cleanup):
+    # Setup reclamation is a one-time cost, outside the steady-state requests.
+    flushed = node.call("/api/db/flush", {})[0]
+    require(flushed.get("durable") is True, "The app setup lacks a durable flush")
+    save(output / "setup-cleanup.json", cleanup.request_and_wait(node))
+
+
+def arm(args, Node, cleanup, label, pair):
     output = args.output / f"pair-{pair}-{label}"
     output.mkdir(mode=0o700)
     baseline = label == "baseline"
@@ -54,14 +61,18 @@ def arm(args, Node, finish_setup, label, pair):
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
     try:
         node.start()
+        # From API 13 (lastdb #803) every declared schema owns its values. No arm runs an older node.
+        version = node.call("/api/version")[0]
+        require((version.get("data") or version).get("api_version", 0) >= 13,
+                "An arm runs a node before API 13, where a schema does not own its values")
         cloud_off(node, output, "start")
         product(args, node, output, label, "setup")
-        finish_setup(node, output)
+        finish_setup(node, output, cleanup)
         node.stop()
         node.start()
         cloud_off(node, output, "reopen")
         product(args, node, output, label, "measure")
-        finish_setup(node, output)
+        finish_setup(node, output, cleanup)
         node.stop()
         node.start()
         cloud_off(node, output, "final-reopen")
@@ -82,6 +93,7 @@ def render(args, arms):
     lines = ["## F-Situations schema ownership and latency", "",
              f"App: `{args.baseline_revision}` → `{args.candidate_revision}`.",
              f"Baseline daemon: `{args.daemon_before_revision}`. Candidate daemon: `{args.daemon_after_revision}`.",
+             "Both daemons are API 13 or later, where each declared schema owns its values.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
              "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",
@@ -101,7 +113,7 @@ def render(args, arms):
         old, new = cells["baseline"], cells["candidate"]
         lines.append(f"| {operation} | {old[0]:.3f} | {new[0]:.3f} | {old[1]:.3f} | {new[1]:.3f} | {(new[1]/old[1]-1)*100:+.1f}% |")
     lines.extend(["", "No sample is removed or trimmed. Each arm retains its full raw samples.",
-                  "The common untimed verifier uses the candidate adapter for both sources; the baseline adapter lacks a raw metadata call.",
+                  "The common untimed verifier uses the candidate adapter for both sources.",
                   "Timed reads, writes, list reads, and publications use their own exact source revision."])
     return "\n".join(lines) + "\n"
 
@@ -126,14 +138,15 @@ def main():
     require(not args.output.exists() and args.output.parent.resolve().is_relative_to(runner), "A fresh runner output path is required")
     args.output.mkdir(mode=0o700)
     sys.path.insert(0, str(args.lastdb_source / "scripts/benchmarks"))
+    sys.path.append(str(args.lastdb_source / "scripts/disk_v2"))
     from node import Node, file_hash
-    from app_multi_key_compare import finish_setup
+    import cleanup
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
               "binary_sha256": {name: file_hash(getattr(args, name)) for name in ("daemon_before", "daemon_after")}, "arms": []}
     try:
         for pair, order in enumerate((("baseline", "candidate"), ("candidate", "baseline"))):
             for label in order:
-                result["arms"].append(arm(args, Node, finish_setup, label, pair))
+                result["arms"].append(arm(args, Node, cleanup, label, pair))
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:
             stream.write(render(args, result["arms"]))
         result["complete"] = True

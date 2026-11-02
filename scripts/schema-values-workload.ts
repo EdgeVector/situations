@@ -182,7 +182,7 @@ async function snapshot(
   cfg: Config,
   compareExpected = true,
 ): Promise<Record<string, unknown>> {
-  // The same untimed verifier serves both sources. Old app clients lack rawCall.
+  // The same untimed verifier (the candidate client) serves both sources.
   node = await client(args.candidate!, cfg);
   const values: Record<string, unknown> = {};
   const pending = APP_SCHEMAS.flatMap(({ key, definition }) => {
@@ -336,7 +336,7 @@ async function publish(
       expectedCount, "The actual publication membership differs.");
   for (const [key, address] of Object.entries(result.schemaHashes))
     cfg.schemaHashes[`admin_${key}`] = String(address);
-  // Old setup knows only five schemas. Its real publication returns the other three addresses.
+  // Keep the publication addresses and their field profiles in the saved config.
   cfg.schemaFieldAliases = {
     ...cfg.schemaFieldAliases,
     ...canonicalProfilesForHashes(cfg.schemaHashes),

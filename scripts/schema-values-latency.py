@@ -60,7 +60,7 @@ def arm(args, Node, cleanup, label, pair):
     baseline = label == "baseline"
     binary, revision = (args.daemon_before, args.daemon_before_revision) if baseline else (args.daemon_after, args.daemon_after_revision)
     node = Node(binary, revision, output, temporary_directory=Path(os.environ["RUNNER_TEMP"]).resolve(),
-                full_socket_name="folddb-full.sock", environment={"LASTDB_SELF_METRICS_TO_DB": "false",
+                environment={"LASTDB_SELF_METRICS_TO_DB": "false",
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
     try:
         node.start()

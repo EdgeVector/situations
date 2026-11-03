@@ -19,10 +19,12 @@ env:
   # app too. Then pin the main commit of the snapshot pages here.
   APP_BEFORE: ${{ github.event.pull_request.head.sha || github.sha }}
   APP_AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
-  # lastdb main after format 8 (API 21, #1014): the LastSecrets pin.
-  DAEMON_BEFORE: 372552e8d6a8ad0f6c325f82029a91ca910acea5
-  # lastdb main at #1089 (API 21, format 8): the release on the primary home.
-  DAEMON_AFTER: 1f74ec1efd9cc2b615a3daf3aafc1cdd8464c9f8
+  # Both arms use lastdb main just before format 9 (#1139): format 8, and it
+  # declares schemas locally (#1142). Older engines write each declare to the
+  # PROD Schema Service, which is advisory now and refuses that write
+  # (401 cert_required). The brain latency job uses the same pin.
+  DAEMON_BEFORE: d94afb7584ff7957fb69d1511ac4b8cd64b007da
+  DAEMON_AFTER: d94afb7584ff7957fb69d1511ac4b8cd64b007da
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:

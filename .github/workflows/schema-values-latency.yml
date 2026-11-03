@@ -12,15 +12,17 @@ concurrency:
   group: situations-values-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 env:
-  # F-Situations main at #22, before the API 21 readers. Each schema owns its values.
-  APP_BEFORE: a60a21937fb074488e390c79495d92f87484da46
+  # Both arms run on a format 8 home, which refuses a record above 64 KiB.
+  # Every app on main before the snapshot pages writes one 157,727-byte admin
+  # snapshot record for the 64-record seed, and an app before #23 cannot read
+  # API 21. Until the snapshot pages are on main, the baseline arm runs this
+  # app too. Then pin the main commit of the snapshot pages here.
+  APP_BEFORE: ${{ github.event.pull_request.head.sha || github.sha }}
   APP_AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
-  # lastdb main at #803 (API 13): the first node where every declared schema owns its values.
-  DAEMON_BEFORE: e13ca0dbb06ef03fe0aa7229801d3cb7e072e7f3
-  # lastdb main at #907 (API 14), before #929 makes every new home format 7.
-  # Format 7 and later cap a record at 64 KiB. The admin snapshot of the
-  # 64-record seed is above that cap, so both arms stay on a format 6 home.
-  DAEMON_AFTER: 0706f0b12acc34f6a2e81ba7fc3fe5cae54dd9d3
+  # lastdb main after format 8 (API 21, #1014): the LastSecrets pin.
+  DAEMON_BEFORE: 372552e8d6a8ad0f6c325f82029a91ca910acea5
+  # lastdb main at #1089 (API 21, format 8): the release on the primary home.
+  DAEMON_AFTER: 1f74ec1efd9cc2b615a3daf3aafc1cdd8464c9f8
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:

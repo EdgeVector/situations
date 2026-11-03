@@ -262,7 +262,8 @@ Run it after an upgrade, after \`situations init\`.`;
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
 Write a privacy-safe admin deliverable snapshot to the local LastDB Mini socket:
-  - fsituations/SituationAdminSnapshot key posture-latest
+  - fsituations/SituationAdminSnapshot key posture-latest, and posture-latest/page-0001
+    and up when the lists need more than one page (each record stays under 64 KiB)
   - fsituations/SituationAdminPosture per active/monitoring situation
   - fsituations/SituationAdminNotice per recent notice (default --since 24h)
 
@@ -1122,7 +1123,7 @@ async function publishStatusCmd(rest: string[]): Promise<number> {
   }
   const action = result.dryRun ? "DRY-RUN" : "PUBLISHED";
   console.log(
-    `${action} situations posture snapshot captured_at=${result.capturedAt} posture=${result.posture.length} notices=${result.notices.length}`,
+    `${action} situations posture snapshot captured_at=${result.capturedAt} posture=${result.posture.length} notices=${result.notices.length} pages=${result.snapshots.length}`,
   );
   console.log(
     `schemas snapshot=${result.schemaHashes.snapshot} posture=${result.schemaHashes.posture} notice=${result.schemaHashes.notice}`,

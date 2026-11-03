@@ -221,9 +221,22 @@ same `delivery_slice` / `lastdb.slice.v1` path as the kanban admin consumer
 
 | Record | Key | Fields |
 |--------|-----|--------|
-| `fsituations/SituationAdminSnapshot` | `posture-latest` | captured_at, posture/notice counts + JSON bundles, schema_hashes_json |
+| `fsituations/SituationAdminSnapshot` | `posture-latest`, then `posture-latest/page-0001` … | captured_at, posture/notice counts + one page of each JSON list, schema_hashes_json |
 | `fsituations/SituationAdminPosture` | `<slug>` | slug, severity, status, summary, blocked_actions |
 | `fsituations/SituationAdminNotice` | `<slug>` | kind, at, title, summary, systems |
+
+A format 7 or later home refuses a record above 64 KiB. One snapshot record
+with both full lists grows with every situation and notice: the CI seed of 64
+situations and 64 notices is a 157,727-byte record. So the snapshot is split
+into pages of the same schema. `posture-latest` is page 0. Each page holds up
+to 8 items of each list, and fewer when the items are large, so that the field
+values of a page stay at or below 48 KiB. Every page repeats `captured_at`, the
+two total counts, and `schema_hashes_json`. To read a snapshot, read page 0 by
+key. If it holds both full lists, it is the only page. Otherwise the page size
+is the longer list on page 0, the page count is
+`ceil(max(posture_count, notice_count) / page size)`, and one batch read gets
+the other pages by key. `deliver-status` names every page key in its snapshot
+leg.
 
 Active/monitoring posture only. Notices default to `--since 24h` (not expired).
 Full `phases_json`, preflight message bodies, and secret material are never

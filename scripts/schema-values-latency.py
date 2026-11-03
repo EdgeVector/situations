@@ -11,8 +11,8 @@ import subprocess
 import sys
 
 OPERATIONS = ("point_read", "update", "notice_read", "active_list", "publication")
-# Both arms run on a format 8 home, where a record above 64 KiB is refused.
-HOME_FORMAT = 8
+# Both arms run the same prebuilt daemon, the latest lastdb nightly. Its home format is recorded, not required.
+# LastDB refuses a record above its record cap.
 RECORD_CAP_BYTES = 64 * 1024
 
 
@@ -54,19 +54,42 @@ def finish_setup(node, output, cleanup):
     save(output / "setup-cleanup.json", cleanup.request_and_wait(node))
 
 
+def nightly_node(Node, expected_version):
+    """The lastdb helper Node, for a prebuilt nightly daemon (the same shared fix as brain).
+
+    The helper requires `bench-<revision>` in /api/version, the stamp of a CI cargo build. A nightly
+    reports `<core>-nightly.<date>.g<oid9>` instead, so this subclass swallows only that one refusal while
+    the daemon is still alive, then binds the running daemon to the selected source. This is valid only
+    with workers=0: start() skips its worker-count check after the version refusal. No arm passes workers.
+    """
+    class NightlyNode(Node):
+        def start(self):
+            require(not self.workers, "NightlyNode does not check a worker count")
+            try:
+                super().start()
+            except RuntimeError as error:
+                if ("differs from the selected revision" not in str(error)
+                        or self.process is None or self.process.poll() is not None):
+                    raise
+            # The caller's finally block stops the daemon and removes the owned home.
+            version = json.dumps(json.loads((self.output / "version.json").read_text()))
+            if "-nightly." not in version or f".g{self.revision[:9]}" not in version:
+                raise RuntimeError("The actual daemon version is not the nightly of the selected revision")
+            if expected_version not in version:
+                raise RuntimeError("The actual daemon version differs from the nightly build version")
+    return NightlyNode
+
+
 def arm(args, Node, cleanup, label, pair):
     output = args.output / f"pair-{pair}-{label}"
     output.mkdir(mode=0o700)
-    baseline = label == "baseline"
-    binary, revision = (args.daemon_before, args.daemon_before_revision) if baseline else (args.daemon_after, args.daemon_after_revision)
-    node = Node(binary, revision, output, temporary_directory=Path(os.environ["RUNNER_TEMP"]).resolve(),
+    node = Node(args.daemon, args.daemon_revision, output, temporary_directory=Path(os.environ["RUNNER_TEMP"]).resolve(),
                 environment={"LASTDB_SELF_METRICS_TO_DB": "false",
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
     try:
         node.start()
-        # The home marker exists after the first start.
+        # The home marker exists after the first start. Record the format the nightly writes.
         save(output / "home-format.json", {"format": node.home_format()})
-        require(node.home_format() == HOME_FORMAT, "An arm opened a home that is not format 8")
         # From API 13 (lastdb #803) every declared schema owns its values. No arm runs an older node.
         version = node.call("/api/version")[0]
         require((version.get("data") or version).get("api_version", 0) >= 13,
@@ -102,10 +125,10 @@ def render(args, arms):
     largest = max(item.get("snapshot_page_max_field_bytes", 0) for item in arms)
     lines = ["## F-Situations schema ownership and latency", "",
              f"App: `{args.baseline_revision}` → `{args.candidate_revision}`.",
-             f"Baseline daemon: `{args.daemon_before_revision}`. Candidate daemon: `{args.daemon_after_revision}`.",
-             f"Home format of every arm: **{', '.join(formats)}**. Each declared schema owns its values.",
+             f"Daemon of both arms: the latest lastdb nightly `{args.daemon_version}` (source `{args.daemon_revision}`).",
+             f"Observed home format of every arm: **{', '.join(formats)}**. Each declared schema owns its values.",
              f"Admin snapshot: {', '.join(pages)} page records per publication. The largest page holds {largest:,} field value bytes."
-             f" A format 8 home refuses a record above {RECORD_CAP_BYTES:,} bytes.",
+             f" LastDB refuses a record above {RECORD_CAP_BYTES:,} bytes.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
              "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",
@@ -132,18 +155,20 @@ def render(args, arms):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("baseline", "candidate", "worker", "daemon-before", "daemon-after", "lastdb-source", "output"):
+    for name in ("baseline", "candidate", "worker", "daemon", "lastdb-source", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("baseline-revision", "candidate-revision", "daemon-before-revision", "daemon-after-revision"):
+    for name in ("baseline-revision", "candidate-revision", "daemon-revision", "daemon-version"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--records", type=int, default=64)
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "Hosted CI only")
     require(64 <= args.records <= 256, "Use a declared 64 to 256 record seed")
     require(all(re.fullmatch(r"[a-f0-9]{40}", getattr(args, name)) for name in
-                ("baseline_revision", "candidate_revision", "daemon_before_revision", "daemon_after_revision")), "Exact source revisions are required")
+                ("baseline_revision", "candidate_revision", "daemon_revision")), "Exact source revisions are required")
+    # A nightly build version names the first 9 characters of its source.
+    require(f".g{args.daemon_revision[:9]}" in args.daemon_version, "The nightly build version does not name its source")
     for path, revision in ((args.baseline, args.baseline_revision), (args.candidate, args.candidate_revision),
-                           (args.lastdb_source, args.daemon_after_revision)):
+                           (args.lastdb_source, args.daemon_revision)):
         require(subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip() == revision,
                 "A source checkout differs from its selected revision")
     runner = Path(os.environ["RUNNER_TEMP"]).resolve()
@@ -153,8 +178,9 @@ def main():
     sys.path.append(str(args.lastdb_source / "scripts/disk_v2"))
     from node import Node, file_hash
     import cleanup
+    Node = nightly_node(Node, args.daemon_version)
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
-              "binary_sha256": {name: file_hash(getattr(args, name)) for name in ("daemon_before", "daemon_after")}, "arms": []}
+              "binary_sha256": {"daemon": file_hash(args.daemon)}, "arms": []}
     try:
         for pair, order in enumerate((("baseline", "candidate"), ("candidate", "baseline"))):
             for label in order:

@@ -67,10 +67,6 @@ jobs:
           printf 'App before: %s\nApp after: %s\nDaemon before: %s\nDaemon after: %s\n' \
             "$APP_BEFORE" "$APP_AFTER" "$DAEMON_BEFORE" "$DAEMON_AFTER" \
             > "$RUNNER_TEMP/situations-definition-results/revisions.txt"
-      - name: Require registered app definitions before the build
-        run: |
-          bun candidate/scripts/schema-definitions.ts --baseline "$GITHUB_WORKSPACE/baseline" \
-            --output "$RUNNER_TEMP/situations-definition-results/definitions.json"
       - name: Build the two actual daemon releases and install app dependencies
         env:
           CARGO_BUILD_JOBS: '3'

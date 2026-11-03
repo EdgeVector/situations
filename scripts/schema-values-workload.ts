@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
 import { canonicalProfilesForHashes } from "../src/init-schema.ts";
 import { nodeOwnsValues } from "../src/schema-mode.ts";
+import { fieldValueBytes } from "../src/field-value-size.ts";
 import type { Config } from "../src/config.ts";
 import type { BatchMutationOp, NodeClient } from "../src/client.ts";
 import type { Situation } from "../src/record.ts";
@@ -316,6 +317,7 @@ async function checkLists(
   }
 }
 
+let snapshotPages = { snapshot_pages: 0, snapshot_page_max_field_bytes: 0 };
 async function publish(
   node: NodeClient,
   cfg: Config,
@@ -329,11 +331,17 @@ async function publish(
     noticeLimit: expectedCount,
     noticeSince: "24h",
   });
+  // A snapshot is one or more page records. A format 8 node refuses a page above its 64 KiB record cap.
   require(result.dryRun === false &&
-    result.written.snapshots === 1 &&
+    result.written.snapshots === result.snapshots.length &&
+    result.snapshots.length >= 1 &&
     result.written.posture === expectedCount &&
     result.written.notices ===
       expectedCount, "The actual publication membership differs.");
+  // The field value bytes of each page, as the node measures them. Field names and stamps are extra.
+  const pageBytes = result.snapshots.map((page: Record<string, string>) =>
+    Object.values(page).reduce((total, value) => total + fieldValueBytes(value), 0));
+  snapshotPages = { snapshot_pages: pageBytes.length, snapshot_page_max_field_bytes: Math.max(...pageBytes) };
   for (const [key, address] of Object.entries(result.schemaHashes))
     cfg.schemaHashes[`admin_${key}`] = String(address);
   // Keep the publication addresses and their field profiles in the saved config.
@@ -400,6 +408,7 @@ async function runSetup(): Promise<void> {
     ),
     current_records: Object.keys(before).length,
     source_hashes: cfg.schemaHashes,
+    ...snapshotPages,
   });
 }
 
@@ -507,6 +516,7 @@ async function runMeasure(): Promise<void> {
     repeat_setup: args.label !== "baseline",
     complete_membership: true,
     source_update_keeps_publication_values: sourceUpdateKeepsPublicationValues,
+    ...snapshotPages,
   });
 }
 

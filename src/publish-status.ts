@@ -26,9 +26,20 @@ import {
 } from "./record.ts";
 import { publicationSchemas as SCHEMAS, SNAPSHOT_FIELDS, POSTURE_FIELDS, NOTICE_SLIM_FIELDS } from "./publication-schemas.ts";
 import { commitOps } from "./index-entry.ts";
+import { fieldValueBytes } from "./field-value-size.ts";
 
+/** Key of snapshot page 0. Later pages are `posture-latest/page-0001` and up. */
 export const SNAPSHOT_SLUG = "posture-latest";
 const DEFAULT_MAX_RECORDS = 50;
+/** Most items of each list on one snapshot page. A page of large items holds fewer. */
+const SNAPSHOT_PAGE_ITEMS = 8;
+/**
+ * Most field value bytes on one snapshot page. A format 7 or later home refuses
+ * a record above 64 KiB (`record_value::MAX_RECORD_BYTES`), and that cap counts
+ * the field names, one stamp per field, and the schema identity map too. This
+ * budget leaves 16 KiB for them.
+ */
+const SNAPSHOT_PAGE_MAX_BYTES = 48 * 1024;
 
 type FieldMap = Record<string, string>;
 type SchemaKey = "snapshot" | "posture" | "notice";
@@ -49,7 +60,8 @@ export interface PublishStatusOptions {
 
 interface PosturePublication {
   capturedAt: string;
-  snapshot: FieldMap;
+  /** The snapshot pages, page 0 (`posture-latest`) first. */
+  snapshots: FieldMap[];
   posture: FieldMap[];
   notices: FieldMap[];
 }
@@ -134,18 +146,63 @@ export function buildPosturePublication(options: {
 
   const posture = active.map((s) => postureFields(s, capturedAt));
   const notices = recent.map((n) => noticeFields(n, capturedAt));
+  const snapshots = snapshotPages(capturedAt, posture, notices);
 
-  const snapshot: FieldMap = {
-    slug: SNAPSHOT_SLUG,
-    captured_at: capturedAt,
-    posture_count: String(posture.length),
-    notice_count: String(notices.length),
-    posture_json: JSON.stringify(posture),
-    notices_json: JSON.stringify(notices),
-    schema_hashes_json: "",
-  };
+  return { capturedAt, snapshots, posture, notices };
+}
 
-  return { capturedAt, snapshot, posture, notices };
+/** The key of one snapshot page. */
+export function snapshotPageSlug(page: number): string {
+  return page === 0 ? SNAPSHOT_SLUG : `${SNAPSHOT_SLUG}/page-${String(page).padStart(4, "0")}`;
+}
+
+/**
+ * Split one snapshot into pages of the same schema. One record with both full
+ * lists grows with every situation and notice: the 64-situation, 64-notice CI
+ * seed is a 157,727-byte record, and a format 7 or later home refuses a record
+ * above 64 KiB.
+ *
+ * Page n holds items [n*size, (n+1)*size) of each list. Every page repeats the
+ * capture time, the two total counts, and the schema identity map. `size` is
+ * the largest value up to SNAPSHOT_PAGE_ITEMS for which every page fits
+ * SNAPSHOT_PAGE_MAX_BYTES, so the record size does not depend on how many
+ * situations are active.
+ *
+ * A reader reads page 0 by key. When page 0 holds both full lists, it is the
+ * only page. Otherwise `size` is the longer list on page 0, the page count is
+ * ceil(max(posture_count, notice_count) / size), and the reader reads the other
+ * pages by key in one batch. A page from an earlier, larger snapshot stays on
+ * the node with an older captured_at; no reader asks for it.
+ */
+function snapshotPages(capturedAt: string, posture: FieldMap[], notices: FieldMap[]): FieldMap[] {
+  const longest = Math.max(posture.length, notices.length);
+  for (let size = SNAPSHOT_PAGE_ITEMS; size >= 1; size--) {
+    const pages = Array.from({ length: Math.max(1, Math.ceil(longest / size)) }, (_, page) => ({
+      slug: snapshotPageSlug(page),
+      captured_at: capturedAt,
+      posture_count: String(posture.length),
+      notice_count: String(notices.length),
+      posture_json: JSON.stringify(posture.slice(page * size, (page + 1) * size)),
+      notices_json: JSON.stringify(notices.slice(page * size, (page + 1) * size)),
+      schema_hashes_json: "",
+    }));
+    if (pages.every((fields) => pageBytes(fields) <= SNAPSHOT_PAGE_MAX_BYTES)) return pages;
+  }
+  throw new FsituationsError({
+    code: "snapshot_page_full",
+    message: `One posture and one notice summary do not fit one ${SNAPSHOT_PAGE_MAX_BYTES}-byte snapshot page.`,
+    hint: "Shorten the longest situation or notice summary, then publish again. No record was written.",
+  });
+}
+
+/** The field value bytes of one page as the node measures them. */
+function pageBytes(fields: FieldMap): number {
+  return Object.values(fields).reduce((total, value) => total + fieldValueBytes(value), 0);
+}
+
+function setSchemaHashes(publication: PosturePublication, schemaHashes: Record<SchemaKey, string>): void {
+  const encoded = JSON.stringify(schemaHashes);
+  for (const page of publication.snapshots) page.schema_hashes_json = encoded;
 }
 
 export async function publishPostureStatus(
@@ -187,7 +244,7 @@ export async function publishPostureStatus(
 
   if (options.dryRun || !node) {
     const schemaHashes = placeholderSchemaHashes();
-    publication.snapshot.schema_hashes_json = JSON.stringify(schemaHashes);
+    setSchemaHashes(publication, schemaHashes);
     return {
       ...publication,
       schemaHashes,
@@ -202,12 +259,15 @@ export async function publishPostureStatus(
     if(!address) throw new FsituationsError({code:"publication_schema_missing",message:"The selected app config needs explicit owned-schema setup before publication."});
     return[key,address];
   })) as Record<SchemaKey,string>;
-  publication.snapshot.schema_hashes_json = JSON.stringify(schemaHashes);
+  setSchemaHashes(publication, schemaHashes);
 
+  // Page 0 goes last: when commitOps splits a large publication, the later
+  // pages are written before page 0 names the new capture.
+  const [first,...later]=publication.snapshots;
   const records=[
-    {schemaHash:schemaHashes.snapshot,keyHash:SNAPSHOT_SLUG,fields:publication.snapshot},
     ...publication.posture.map((fields)=>({schemaHash:schemaHashes.posture,keyHash:requiredField(fields,"slug"),fields})),
     ...publication.notices.map((fields)=>({schemaHash:schemaHashes.notice,keyHash:requiredField(fields,"slug"),fields})),
+    ...[...later,first!].map((fields)=>({schemaHash:schemaHashes.snapshot,keyHash:requiredField(fields,"slug"),fields})),
   ];
   // Native update is an upsert. Collect the independent writes without point-read probes.
   const writes=records.map(({schemaHash,keyHash,fields})=>({schemaHash,keyHash,fields,mutationType:"update" as const}));
@@ -218,7 +278,7 @@ export async function publishPostureStatus(
     schemaHashes,
     dryRun: false,
     written: {
-      snapshots: 1,
+      snapshots: publication.snapshots.length,
       posture: publication.posture.length,
       notices: publication.notices.length,
     },
@@ -231,6 +291,7 @@ export async function deliverPostureStatus(
   const publication = await publishPostureStatus(options);
   const deliveryRequest = buildDeliveryStageRequest({
     schemaHashes: publication.schemaHashes,
+    snapshotSlugs: publication.snapshots.map((page) => requiredField(page, "slug")),
     recipient: options.recipient,
     maxRecords: options.maxRecords,
     canonicalVocabulary:Boolean(options.cfg?.schemaFieldAliases) || options.node?.canonicalVocabulary === true,
@@ -254,6 +315,8 @@ export async function deliverPostureStatus(
 
 export function buildDeliveryStageRequest(opts: {
   schemaHashes: Record<SchemaKey, string>;
+  /** Every snapshot page key. A hash_keys leg is outside max_records. */
+  snapshotSlugs: string[];
   recipient: DeliveryRecipient;
   maxRecords?: number;
   canonicalVocabulary?: boolean;
@@ -274,7 +337,7 @@ export function buildDeliveryStageRequest(opts: {
       {
         schema_name: opts.schemaHashes.snapshot,
         fields: fieldsFor("snapshot",SNAPSHOT_FIELDS),
-        hash_keys: [SNAPSHOT_SLUG],
+        hash_keys: opts.snapshotSlugs,
       },
       {
         schema_name: opts.schemaHashes.posture,

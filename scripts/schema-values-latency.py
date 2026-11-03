@@ -11,6 +11,9 @@ import subprocess
 import sys
 
 OPERATIONS = ("point_read", "update", "notice_read", "active_list", "publication")
+# Both arms run on a format 8 home, where a record above 64 KiB is refused.
+HOME_FORMAT = 8
+RECORD_CAP_BYTES = 64 * 1024
 
 
 def require(condition, message):
@@ -61,6 +64,9 @@ def arm(args, Node, cleanup, label, pair):
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
     try:
         node.start()
+        # The home marker exists after the first start.
+        save(output / "home-format.json", {"format": node.home_format()})
+        require(node.home_format() == HOME_FORMAT, "An arm opened a home that is not format 8")
         # From API 13 (lastdb #803) every declared schema owns its values. No arm runs an older node.
         version = node.call("/api/version")[0]
         require((version.get("data") or version).get("api_version", 0) >= 13,
@@ -81,6 +87,7 @@ def arm(args, Node, cleanup, label, pair):
         require(result.get("complete") is True and result.get("complete_membership") is True,
                 "The product run did not confirm its complete membership")
         result["pair"] = pair
+        result["home_format"] = node.home_format()
         result["cloud_sync_off"] = True
         result["disk"] = node.disk_breakdown()
         save(output / "result.json", result)
@@ -90,10 +97,15 @@ def arm(args, Node, cleanup, label, pair):
 
 
 def render(args, arms):
+    formats = sorted({str(item.get("home_format")) for item in arms})
+    pages = sorted({str(item.get("snapshot_pages")) for item in arms})
+    largest = max(item.get("snapshot_page_max_field_bytes", 0) for item in arms)
     lines = ["## F-Situations schema ownership and latency", "",
              f"App: `{args.baseline_revision}` → `{args.candidate_revision}`.",
              f"Baseline daemon: `{args.daemon_before_revision}`. Candidate daemon: `{args.daemon_after_revision}`.",
-             "Both daemons are API 13 or later, where each declared schema owns its values.",
+             f"Home format of every arm: **{', '.join(formats)}**. Each declared schema owns its values.",
+             f"Admin snapshot: {', '.join(pages)} page records per publication. The largest page holds {largest:,} field value bytes."
+             f" A format 8 home refuses a record above {RECORD_CAP_BYTES:,} bytes.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
              "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",

@@ -12,19 +12,13 @@ concurrency:
   group: situations-values-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 env:
-  # Both arms run on a format 8 home, which refuses a record above 64 KiB.
-  # Every app on main before the snapshot pages writes one 157,727-byte admin
-  # snapshot record for the 64-record seed, and an app before #23 cannot read
-  # API 21. Until the snapshot pages are on main, the baseline arm runs this
-  # app too. Then pin the main commit of the snapshot pages here.
-  APP_BEFORE: ${{ github.event.pull_request.head.sha || github.sha }}
+  # The old app is the PR base (the previous main on a push). Main has the
+  # admin snapshot pages under the 64 KiB record cap since #28.
+  APP_BEFORE: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
   APP_AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
-  # Both arms use lastdb main just before format 9 (#1139): format 8, and it
-  # declares schemas locally (#1142). Older engines write each declare to the
-  # PROD Schema Service, which is advisory now and refuses that write
-  # (401 cert_required). The brain latency job uses the same pin.
-  DAEMON_BEFORE: d94afb7584ff7957fb69d1511ac4b8cd64b007da
-  DAEMON_AFTER: d94afb7584ff7957fb69d1511ac4b8cd64b007da
+  # Both arms run the same prebuilt daemon: the latest lastdb nightly, fetched
+  # below. This job compares the old app with the new app on the latest LastDB.
+  # Daemon-against-daemon comparisons belong to the lastdb benchmark CI.
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:
@@ -42,66 +36,83 @@ jobs:
           ref: ${{ env.APP_BEFORE }}
           path: baseline
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: EdgeVector/lastdb
-          ref: ${{ env.DAEMON_BEFORE }}
-          path: daemon-before
-          persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: EdgeVector/lastdb
-          ref: ${{ env.DAEMON_AFTER }}
-          path: daemon-after
-          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.10'
+      - name: Fetch the latest lastdb nightly
+        id: nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(gh release list -R EdgeVector/lastdb --exclude-drafts --limit 30 \
+            --json tagName,publishedAt --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.publishedAt) | last | .tagName')"
+          test -n "$tag" && test "$tag" != null
+          dir="$RUNNER_TEMP/lastdb-nightly"
+          mkdir -p "$dir"
+          gh release download "$tag" -R EdgeVector/lastdb -D "$dir" \
+            -p 'lastdb-x86_64-unknown-linux-gnu.tar.gz' -p 'lastdb-x86_64-unknown-linux-gnu.manifest.json' -p SHA256SUMS.txt
+          (cd "$dir" && grep ' lastdb-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS.txt | sha256sum -c -)
+          tar -xzf "$dir/lastdb-x86_64-unknown-linux-gnu.tar.gz" -C "$dir"
+          for name in lastdb lastdbd; do
+            want="$(jq -r --arg n "$name" '.binaries[] | select(.name == $n) | .sha256' "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
+            test "$(sha256sum "$dir/$name" | cut -d' ' -f1)" = "$want"
+          done
+          oid="$(jq -r .source_git_oid "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
+          # The daemon reports this build version in /api/version. The latency script checks it.
+          version="$(jq -r .version "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
+          test -n "$version" && test "$version" != null
+          sum="$(grep ' lastdb-x86_64-unknown-linux-gnu.tar.gz$' "$dir/SHA256SUMS.txt" | cut -d' ' -f1)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "oid=$oid" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "lastdbd=$dir/lastdbd" >> "$GITHUB_OUTPUT"
+          echo "lastdb=$dir/lastdb" >> "$GITHUB_OUTPUT"
+          printf '### LastDB under test\n\nNightly `%s` (source `%s`), Linux tarball sha256 `%s`.\n' "$tag" "$oid" "$sum" >> "$GITHUB_STEP_SUMMARY"
+      # The lastdb helper scripts (scripts/benchmarks, scripts/disk_v2) at the
+      # nightly source, so the helper and the daemon stay in step.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: EdgeVector/lastdb
+          ref: ${{ steps.nightly.outputs.oid }}
+          path: lastdb
+          persist-credentials: false
       - name: Require the actual source revisions
+        env:
+          NIGHTLY_TAG: ${{ steps.nightly.outputs.tag }}
+          NIGHTLY_OID: ${{ steps.nightly.outputs.oid }}
+          NIGHTLY_VERSION: ${{ steps.nightly.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C candidate rev-parse HEAD)" = "$APP_AFTER"
           test "$(git -C baseline rev-parse HEAD)" = "$APP_BEFORE"
-          test "$(git -C daemon-before rev-parse HEAD)" = "$DAEMON_BEFORE"
-          test "$(git -C daemon-after rev-parse HEAD)" = "$DAEMON_AFTER"
+          test "$(git -C lastdb rev-parse HEAD)" = "$NIGHTLY_OID"
           mkdir "$RUNNER_TEMP/situations-definition-results"
-          printf 'App before: %s\nApp after: %s\nDaemon before: %s\nDaemon after: %s\n' \
-            "$APP_BEFORE" "$APP_AFTER" "$DAEMON_BEFORE" "$DAEMON_AFTER" \
+          printf 'App before: %s\nApp after: %s\nDaemon (both arms): %s, source %s, version %s\n' \
+            "$APP_BEFORE" "$APP_AFTER" "$NIGHTLY_TAG" "$NIGHTLY_OID" "$NIGHTLY_VERSION" \
             > "$RUNNER_TEMP/situations-definition-results/revisions.txt"
-      - name: Build the two actual daemon releases and install app dependencies
-        env:
-          CARGO_BUILD_JOBS: '3'
-          CARGO_TERM_COLOR: never
+      - name: Install app dependencies
         shell: bash
         run: |
           set -euo pipefail
-          mkdir "$RUNNER_TEMP/situations-binaries"
-          for label in before after; do
-            if [ "$label" = before ]; then revision="$DAEMON_BEFORE"; else revision="$DAEMON_AFTER"; fi
-            cd "$GITHUB_WORKSPACE/daemon-$label"
-            FOLDDB_BUILD_VERSION_OVERRIDE="bench-$revision" \
-              CARGO_TARGET_DIR="$RUNNER_TEMP/situations-target-$label" \
-              cargo build --locked --profile dev-release -p lastdb_node --bin lastdbd
-            cp "$RUNNER_TEMP/situations-target-$label/dev-release/lastdbd" "$RUNNER_TEMP/situations-binaries/daemon-$label"
-            rm -rf "$RUNNER_TEMP/situations-target-$label"
-          done
           for label in baseline candidate; do
             cd "$GITHUB_WORKSPACE/$label"
             bun install --frozen-lockfile
           done
-          cd "$RUNNER_TEMP/situations-binaries"
-          sha256sum daemon-before daemon-after > SHA256SUMS
-          sha256sum --check SHA256SUMS
       - name: Compare exported app functions on fresh homes
+        env:
+          LASTDBD: ${{ steps.nightly.outputs.lastdbd }}
+          NIGHTLY_OID: ${{ steps.nightly.outputs.oid }}
+          NIGHTLY_VERSION: ${{ steps.nightly.outputs.version }}
         run: |
           python3 candidate/scripts/schema-values-latency.py \
             --baseline "$GITHUB_WORKSPACE/baseline" --baseline-revision "$APP_BEFORE" \
             --candidate "$GITHUB_WORKSPACE/candidate" --candidate-revision "$APP_AFTER" \
             --worker "$GITHUB_WORKSPACE/candidate/scripts/schema-values-workload.ts" \
-            --daemon-before "$RUNNER_TEMP/situations-binaries/daemon-before" --daemon-before-revision "$DAEMON_BEFORE" \
-            --daemon-after "$RUNNER_TEMP/situations-binaries/daemon-after" --daemon-after-revision "$DAEMON_AFTER" \
-            --lastdb-source "$GITHUB_WORKSPACE/daemon-after" --records 64 \
+            --daemon "$LASTDBD" --daemon-revision "$NIGHTLY_OID" --daemon-version "$NIGHTLY_VERSION" \
+            --lastdb-source "$GITHUB_WORKSPACE/lastdb" --records 64 \
             --output "$RUNNER_TEMP/situations-results"
       - name: Retain definition results
         if: always()
@@ -129,8 +140,13 @@ jobs:
           ARTIFACT_SHA256: ${{ steps.measurements.outputs.artifact-digest }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/measurement-metadata.json"
-          python3 daemon-after/scripts/benchmarks/artifact.py \
+          # The artifacts API can answer 404 for a second after the upload.
+          for attempt in 1 2 3 4 5 6; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/measurement-metadata.json" && break
+            test "$attempt" -lt 6
+            sleep 5
+          done
+          python3 lastdb/scripts/benchmarks/artifact.py \
             --metadata "$RUNNER_TEMP/measurement-metadata.json" --output "$RUNNER_TEMP/measurement-receipt"
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/measurement.zip"
           printf '%s  %s\n' "${ARTIFACT_SHA256#sha256:}" "$RUNNER_TEMP/measurement.zip" | sha256sum --check

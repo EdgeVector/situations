@@ -331,7 +331,7 @@ async function publish(
     noticeLimit: expectedCount,
     noticeSince: "24h",
   });
-  // A snapshot is one or more page records. A format 8 node refuses a page above its 64 KiB record cap.
+  // A snapshot is one or more page records. LastDB refuses a page above its 64 KiB record cap.
   require(result.dryRun === false &&
     result.written.snapshots === result.snapshots.length &&
     result.snapshots.length >= 1 &&

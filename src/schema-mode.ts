@@ -61,8 +61,7 @@ export function ownedDeclaration(
   if (
     reply.app_id !== OWNER_APP_ID ||
     reply.schema_name !== `${OWNER_APP_ID}/${name}` ||
-    typeof reply.canonical !== "string" ||
-    !reply.canonical ||
+    reply.canonical !== `${OWNER_APP_ID}/${name}` ||
     typeof reply.identity_hash !== "string" ||
     !/^[a-f0-9]{64}$/.test(reply.identity_hash)
   ) {

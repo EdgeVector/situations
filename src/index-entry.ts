@@ -1,3 +1,5 @@
+import { coordinateId, opKey, WRITE_BATCH_LIMIT } from "./native-records.ts";
+import { withRecordWrite } from "./write-context.ts";
 // Keyed index entries over the `IndexEntry` and `NoticeHistory` HashRange
 // schemas (see schemas.ts for the partition list and the entry shape).
 //
@@ -62,7 +64,7 @@ import {
 } from "./schemas.ts";
 
 /** Most ops in one `/api/mutations/batch` request. A migration above this splits. */
-const BATCH_MAX_OPS = 200;
+const BATCH_MAX_OPS = WRITE_BATCH_LIMIT;
 /** Partitions (range queries) in flight at once. */
 const READ_CONCURRENCY = 8;
 /** Keys per multi-get: the node's default page size, so one call is one page. */
@@ -386,10 +388,17 @@ export function deleteOp(
  * nothing. Two ops on one key collapse to the LAST one, so a legacy copy never
  * races the fresh write for the same entry inside one batch.
  */
-export async function commitOps(node: NodeClient, ops: BatchMutationOp[]): Promise<void> {
+export async function commitOps(node: NodeClient, ops: BatchMutationOp[], atomic = false): Promise<void> {
   const last = new Map<string, BatchMutationOp>();
-  for (const op of ops) last.set(`${op.schemaHash}\0${op.keyHash}\0${op.keyRange ?? ""}`, op);
+  for (const op of ops) last.set(coordinateId(op.schemaHash, opKey(op)), op);
   const unique = [...last.values()];
+  if (atomic) {
+    if (unique.length > WRITE_BATCH_LIMIT) {
+      throw new Error("The related update is too large to commit atomically. Complete legacy index repair first.");
+    }
+    await node.mutateBatch(unique);
+    return;
+  }
   for (let i = 0; i < unique.length; i += BATCH_MAX_OPS) {
     await node.mutateBatch(unique.slice(i, i + BATCH_MAX_OPS));
   }
@@ -768,21 +777,23 @@ export async function readPartitions<T>(
   layout: Layout,
   specs: ReadonlyArray<PartitionSpec<T>>,
 ): Promise<Array<PartitionState<T>>> {
-  const states = await mapLimit(specs, READ_CONCURRENCY, (spec) =>
-    loadPartition(node, cfg, layout, spec),
-  );
-  const ops = states.flatMap((state) => state.migrationOps);
-  if (ops.length > 0) {
-    try {
-      await commitOps(node, ops);
-    } catch (err) {
-      warn(
-        `could not copy the legacy Index blobs into the entry partitions (${ops.length} writes): ` +
-          `${err instanceof Error ? err.message : String(err)}; the read is complete and the next read retries.`,
-      );
+  return withRecordWrite(node, async (node) => {
+    const states = await mapLimit(specs, READ_CONCURRENCY, (spec) =>
+      loadPartition(node, cfg, layout, spec),
+    );
+    const ops = states.flatMap((state) => state.migrationOps);
+    if (ops.length > 0) {
+      try {
+        await commitOps(node, ops);
+      } catch (err) {
+        warn(
+          `could not copy the legacy Index blobs into the entry partitions (${ops.length} writes): ` +
+            `${err instanceof Error ? err.message : String(err)}; the read is complete and the next read retries.`,
+        );
+      }
     }
-  }
-  return states;
+    return states;
+  });
 }
 
 /**

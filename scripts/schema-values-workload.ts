@@ -24,6 +24,7 @@ const { values: args } = parseArgs({
       "mode",
       "label",
       "records",
+      "api-version",
     ].map((name) => [name, { type: "string" as const }]),
   ),
 });
@@ -54,6 +55,10 @@ const count = Number(args.records ?? 64);
 require(Number.isSafeInteger(count) &&
   count >= 64 &&
   count <= 256, "Use a declared 64 to 256 record seed.");
+const apiVersion = Number(args["api-version"]);
+const native = apiVersion >= 30;
+require(Number.isInteger(apiVersion) && (native || (apiVersion === 26 && args.label === "baseline")),
+  "The workload requires the native API or the exact migration baseline.");
 const active = args.label === "baseline" ? args.baseline! : args.candidate!;
 const load = (root: string, name: string): Promise<any> =>
   import(pathToFileURL(join(resolve(root), "src", name + ".ts")).href);
@@ -100,6 +105,9 @@ async function client(root: string, cfg?: Config): Promise<NodeClient> {
     userHash: cfg?.userHash ?? "",
     socketPath: args.socket,
     schemaFieldAliases: cfg?.schemaFieldAliases,
+    schemaIdentitiesByAddress: cfg?.schemaIdentities && Object.fromEntries(
+      Object.entries(cfg.schemaIdentities).map(([key, identity]) => [cfg.schemaHashes[key], identity]),
+    ),
     canonicalVocabulary: true,
     timeoutMs: 120000,
   });
@@ -154,6 +162,7 @@ async function setup(
   const resolved = await definitions.resolveOrDeclareSchemaHashes(node, {
     quiet: true,
     canonicalVocabulary: true,
+    expectedIdentities: prior?.schemaIdentities,
   });
   const hashes = resolved.schemaHashes ?? resolved;
   const config = await load(root, "config");
@@ -181,10 +190,7 @@ async function setup(
 async function snapshot(
   node: NodeClient,
   cfg: Config,
-  compareExpected = true,
 ): Promise<Record<string, unknown>> {
-  // The same untimed verifier (the candidate client) serves both sources.
-  node = await client(args.candidate!, cfg);
   const values: Record<string, unknown> = {};
   const pending = APP_SCHEMAS.flatMap(({ key, definition }) => {
     const address = cfg.schemaHashes[key];
@@ -200,7 +206,7 @@ async function snapshot(
     const group = pending.slice(start, start + 64);
     const queries = group.map(({ address, definition, record }) => ({
       schema_name: address,
-      fields: definition.fields,
+      ...(native ? {} : { fields: definition.fields }),
       filter:
         record.key.range === null
           ? { HashKey: record.key.hash }
@@ -236,17 +242,20 @@ async function snapshot(
           Object.keys(row.fields).sort(),
           [...definition.fields].sort(),
         ), "A written record key or field membership differs.");
-      if (compareExpected)
-        require(same(
-          row.fields,
-          record.fields,
-        ), `The actual ${key} values differ from accepted app writes.`);
+      require(same(
+        row.fields,
+        record.fields,
+      ), `The actual ${key} values differ from accepted app writes.`);
+      if (native)
+        require(typeof row.revision === "string" && row.revision.length > 0 &&
+          same(row.alternates, {}), "A native record is missing its revision or explicit alternate membership.");
       // A record has one metadata block, or null.
       values[`${key}/${stable(record.key)}`] = {
         value_sha256: Object.fromEntries(
           definition.fields.map((field) => [field, sha(row.fields[field])]),
         ),
         metadata: row.metadata ?? null,
+        ...(native ? { revision: row.revision, alternates: row.alternates } : {}),
       };
     }
   }
@@ -421,29 +430,35 @@ async function runMeasure(): Promise<void> {
     read("seed-values.json"),
   ), "Reopen changed values or record metadata.");
   const beforeCfg = stable(cfg.schemaHashes);
+  const beforeIdentities = stable(cfg.schemaIdentities);
   if (args.label !== "baseline") {
     const repeated = await setup(active, cfg);
     cfg = repeated.cfg;
     node = repeated.node;
     require(stable(cfg.schemaHashes) === beforeCfg &&
+      stable(cfg.schemaIdentities) === beforeIdentities &&
       same(
         await snapshot(node, cfg),
         read("seed-values.json"),
       ), "Repeat setup changed addresses or current values.");
     const [directory, version] = await Promise.all([
-      node.rawCall("GET", "/api/schemas"),
+      node.rawCall("GET", "/api/schemas?include_full=true"),
       node.rawCall("GET", "/api/version"),
     ]);
     const body = (directory.body as any)?.data ?? directory.body;
     const owned = body.schemas.filter(
-      (schema: any) => schema.owner_app_id === "fsituations",
+      (schema: any) => schema.owner_app_id === "situations",
     );
-    require(version.status === 200 &&
+    require(directory.status === 200 &&
+      version.status === 200 &&
       nodeOwnsValues(version.body) &&
       owned.length === 8 &&
-      owned.every(
-        (schema: any) => !Object.keys(schema.alternate_keys ?? {}).length,
-      ), "The app does not own exactly eight separate record types.");
+      APP_SCHEMAS.every(({ key, definition }) => owned.some((schema: any) =>
+        schema.name === cfg.schemaHashes[key] &&
+        schema.identity_hash === cfg.schemaIdentities?.[key] &&
+        schema.record_keys?.primary?.kind === (definition.schema_type === "HashRange" ? "hash_range" : "hash") &&
+        same(schema.record_keys?.alternates, {}),
+      )), "The app does not own exactly the eight expected native record types.");
   }
   const record = await load(active, "record"),
     notice = await load(active, "notice");
@@ -473,6 +488,7 @@ async function runMeasure(): Promise<void> {
         }),
       ]);
       require(source.summary === summary("situation", key, 1) &&
+        source.title === point.title &&
         published.results.length === 1 &&
         published.results[0]!.fields.summary ===
           summary(

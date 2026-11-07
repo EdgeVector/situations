@@ -1,3 +1,4 @@
+import { withRecordWrite } from "./write-context.ts";
 import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import {
@@ -661,17 +662,26 @@ export async function seedLongLivedNotices(
   cfg: Config,
   layout: Layout,
 ): Promise<number> {
-  const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
-  const now = new Date();
-  const ops: BatchMutationOp[] = [];
-  for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
-    if (raw === null || typeof raw !== "object") continue;
-    const notice = normalizeNotice(raw as NoticeInput);
-    if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
-    ops.push(putOp(layout, "long", NOTICE_LONG_KEY, longRange(notice), noticeEntryPayload(notice)));
-  }
-  await commitOps(node, ops);
-  return ops.length;
+  return withRecordWrite(node, async (node) => {
+    const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
+    const now = new Date();
+    const candidates = new Map<string, BatchMutationOp>();
+    for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
+      if (raw === null || typeof raw !== "object") continue;
+      const notice = normalizeNotice(raw as NoticeInput);
+      if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
+      const range = longRange(notice);
+      candidates.set(range, putOp(layout, "long", NOTICE_LONG_KEY, range, noticeEntryPayload(notice)));
+    }
+    if (!candidates.size) return 0;
+    const existing = await node.queryAll({ schemaHash: layout.entry, fields: [], filter: { HashKey: NOTICE_LONG_KEY } });
+    for (const { key } of existing.results) {
+      if (key.range !== null) candidates.delete(key.range);
+    }
+    const ops = [...candidates.values()];
+    await commitOps(node, ops);
+    return ops.length;
+  });
 }
 
 /**
@@ -730,26 +740,26 @@ export async function upsertNotice(
   cfg: Config,
   input: NoticeInput,
 ): Promise<{ notice: Notice; action: "created" | "updated" }> {
-  const slug =
-    input.slug ??
-    defaultNoticeSlug({ kind: input.kind, title: input.title, at: input.at });
-  // A write that cannot be indexed fails before it writes anything.
-  const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
-  const existing = await findNotice(node, cfg, slug);
-  const notice = normalizeNotice({ ...input, slug }, existing ?? undefined);
-  // The Notice record and its index entry are ONE batch: both commit or neither
-  // does. `update` is an upsert, so create and update are the same write.
-  const ops: BatchMutationOp[] = [
-    {
-      mutationType: "update",
-      schemaHash: schemaHashFor("notice", cfg),
-      keyHash: notice.slug,
-      fields: noticeToFields(notice),
-    },
-    ...(layout ? await noticeIndexOps(node, cfg, layout, notice, existing) : []),
-  ];
-  await commitOps(node, ops);
-  return { notice, action: existing ? "updated" : "created" };
+  const slug = input.slug ?? defaultNoticeSlug({ kind: input.kind, title: input.title, at: input.at });
+  return withRecordWrite(node, async (node) => {
+    // A write that cannot be indexed fails before it writes anything.
+    const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
+    const existing = await findNotice(node, cfg, slug);
+    const notice = normalizeNotice({ ...input, slug }, existing ?? undefined);
+    // The Notice record and its index entry are ONE batch: both commit or neither
+    // does. `update` is an upsert, so create and update are the same write.
+    const ops: BatchMutationOp[] = [
+      {
+        mutationType: "update",
+        schemaHash: schemaHashFor("notice", cfg),
+        keyHash: notice.slug,
+        fields: noticeToFields(notice),
+      },
+      ...(layout ? await noticeIndexOps(node, cfg, layout, notice, existing) : []),
+    ];
+    await commitOps(node, ops, true);
+    return { notice, action: existing ? "updated" : "created" };
+  });
 }
 
 function isNoticeExpired(notice: Notice, at: Date = new Date()): boolean {

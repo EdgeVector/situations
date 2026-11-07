@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verify_registry:
+        description: "Also verify the signed PROD listing and managed CLI for this exact main commit"
+        type: choice
+        options: [none, next, stable]
+        default: none
 permissions:
   contents: read
   actions: read
@@ -16,9 +22,6 @@ env:
   # admin snapshot pages under the 64 KiB record cap since #28.
   APP_BEFORE: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
   APP_AFTER: ${{ github.event.pull_request.head.sha || github.sha }}
-  # Both arms run the same prebuilt daemon: the latest lastdb nightly, fetched
-  # below. This job compares the old app with the new app on the latest LastDB.
-  # Daemon-against-daemon comparisons belong to the lastdb benchmark CI.
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 jobs:
   compare:
@@ -39,37 +42,45 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.10'
-      - name: Fetch the latest lastdb nightly
+      - name: Fetch verified LastDB releases for both source revisions
         id: nightly
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          native='(.schemas | length == 8 and all(.[]; (.record_keys | type) == "object"))'
+          jq -e "$native" candidate/lastdb-app.json > /dev/null
           tag="$(gh release list -R EdgeVector/lastdb --exclude-drafts --limit 30 \
             --json tagName,publishedAt --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.publishedAt) | last | .tagName')"
           test -n "$tag" && test "$tag" != null
-          dir="$RUNNER_TEMP/lastdb-nightly"
-          mkdir -p "$dir"
-          gh release download "$tag" -R EdgeVector/lastdb -D "$dir" \
-            -p 'lastdb-x86_64-unknown-linux-gnu.tar.gz' -p 'lastdb-x86_64-unknown-linux-gnu.manifest.json' -p SHA256SUMS.txt
-          (cd "$dir" && grep ' lastdb-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS.txt | sha256sum -c -)
-          tar -xzf "$dir/lastdb-x86_64-unknown-linux-gnu.tar.gz" -C "$dir"
-          for name in lastdb lastdbd; do
-            want="$(jq -r --arg n "$name" '.binaries[] | select(.name == $n) | .sha256' "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
-            test "$(sha256sum "$dir/$name" | cut -d' ' -f1)" = "$want"
-          done
-          oid="$(jq -r .source_git_oid "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
-          # The daemon reports this build version in /api/version. The latency script checks it.
-          version="$(jq -r .version "$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json")"
-          test -n "$version" && test "$version" != null
-          sum="$(grep ' lastdb-x86_64-unknown-linux-gnu.tar.gz$' "$dir/SHA256SUMS.txt" | cut -d' ' -f1)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "oid=$oid" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "lastdbd=$dir/lastdbd" >> "$GITHUB_OUTPUT"
-          echo "lastdb=$dir/lastdb" >> "$GITHUB_OUTPUT"
-          printf '### LastDB under test\n\nNightly `%s` (source `%s`), Linux tarball sha256 `%s`.\n' "$tag" "$oid" "$sum" >> "$GITHUB_STEP_SUMMARY"
+          fetch() {
+            local selected="$1" prefix="$2" dir="$3"
+            local archive=lastdb-x86_64-unknown-linux-gnu.tar.gz
+            local manifest="$dir/lastdb-x86_64-unknown-linux-gnu.manifest.json"
+            local name want oid version sum
+            mkdir "$dir"
+            gh release download "$selected" -R EdgeVector/lastdb -D "$dir" \
+              -p "$archive" -p "$(basename "$manifest")" -p SHA256SUMS.txt
+            (cd "$dir" && grep " $archive\$" SHA256SUMS.txt | sha256sum -c -)
+            tar -xzf "$dir/$archive" -C "$dir"
+            for name in lastdb lastdbd; do
+              want="$(jq -er --arg n "$name" '.binaries[] | select(.name == $n) | .sha256' "$manifest")"
+              test "$(sha256sum "$dir/$name" | cut -d' ' -f1)" = "$want"
+            done
+            oid="$(jq -er .source_git_oid "$manifest")"
+            version="$(jq -er .version "$manifest")"
+            test "${selected##*-}" = "${oid:0:9}"
+            sum="$(sha256sum "$dir/$archive" | cut -d' ' -f1)"
+            printf '%stag=%s\n%soid=%s\n%sversion=%s\n%slastdbd=%s\n%ssha256=%s\n' \
+              "$prefix" "$selected" "$prefix" "$oid" "$prefix" "$version" "$prefix" "$dir/lastdbd" "$prefix" "$sum" >> "$GITHUB_OUTPUT"
+            printf 'Nightly %s (source %s), Linux tarball SHA-256 %s.\n\n' "$selected" "$oid" "$sum" >> "$GITHUB_STEP_SUMMARY"
+          }
+          fetch "$tag" "" "$RUNNER_TEMP/lastdb-nightly"
+          if ! jq -e "$native" baseline/lastdb-app.json > /dev/null; then
+            # The pre-port app uses the old wire. Keep a real before arm while crossing that boundary.
+            fetch nightly-20261104-4b76c7c90 before_ "$RUNNER_TEMP/lastdb-before"
+          fi
       # The lastdb helper scripts (scripts/benchmarks, scripts/disk_v2) at the
       # nightly source, so the helper and the daemon stay in step.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -80,19 +91,15 @@ jobs:
           persist-credentials: false
       - name: Require the actual source revisions
         env:
-          NIGHTLY_TAG: ${{ steps.nightly.outputs.tag }}
           NIGHTLY_OID: ${{ steps.nightly.outputs.oid }}
-          NIGHTLY_VERSION: ${{ steps.nightly.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C candidate rev-parse HEAD)" = "$APP_AFTER"
           test "$(git -C baseline rev-parse HEAD)" = "$APP_BEFORE"
           test "$(git -C lastdb rev-parse HEAD)" = "$NIGHTLY_OID"
-          mkdir "$RUNNER_TEMP/situations-definition-results"
-          printf 'App before: %s\nApp after: %s\nDaemon (both arms): %s, source %s, version %s\n' \
-            "$APP_BEFORE" "$APP_AFTER" "$NIGHTLY_TAG" "$NIGHTLY_OID" "$NIGHTLY_VERSION" \
-            > "$RUNNER_TEMP/situations-definition-results/revisions.txt"
+          # Registry declarations use the canonical public HTTPS clone URL.
+          git -C candidate remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
       - name: Install app dependencies
         shell: bash
         run: |
@@ -106,20 +113,30 @@ jobs:
           LASTDBD: ${{ steps.nightly.outputs.lastdbd }}
           NIGHTLY_OID: ${{ steps.nightly.outputs.oid }}
           NIGHTLY_VERSION: ${{ steps.nightly.outputs.version }}
+          NIGHTLY_SHA256: ${{ steps.nightly.outputs.sha256 }}
+          BEFORE_LASTDBD: ${{ steps.nightly.outputs.before_lastdbd || steps.nightly.outputs.lastdbd }}
+          BEFORE_OID: ${{ steps.nightly.outputs.before_oid || steps.nightly.outputs.oid }}
+          BEFORE_VERSION: ${{ steps.nightly.outputs.before_version || steps.nightly.outputs.version }}
+          BEFORE_SHA256: ${{ steps.nightly.outputs.before_sha256 || steps.nightly.outputs.sha256 }}
+          VERIFY_REGISTRY: ${{ inputs.verify_registry || 'none' }}
         run: |
           python3 candidate/scripts/schema-values-latency.py \
             --baseline "$GITHUB_WORKSPACE/baseline" --baseline-revision "$APP_BEFORE" \
             --candidate "$GITHUB_WORKSPACE/candidate" --candidate-revision "$APP_AFTER" \
             --worker "$GITHUB_WORKSPACE/candidate/scripts/schema-values-workload.ts" \
             --daemon "$LASTDBD" --daemon-revision "$NIGHTLY_OID" --daemon-version "$NIGHTLY_VERSION" \
+            --daemon-archive-sha256 "$NIGHTLY_SHA256" \
+            --before-daemon "$BEFORE_LASTDBD" --before-daemon-revision "$BEFORE_OID" \
+            --before-daemon-version "$BEFORE_VERSION" --before-daemon-archive-sha256 "$BEFORE_SHA256" \
             --lastdb-source "$GITHUB_WORKSPACE/lastdb" --records 64 \
+            --verify-registry "$VERIFY_REGISTRY" \
             --output "$RUNNER_TEMP/situations-results"
       - name: Retain definition results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: situations-definitions-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/situations-definition-results/
+          path: ${{ runner.temp }}/situations-results/revisions.txt
           if-no-files-found: error
           retention-days: 14
       - name: Retain raw measurement samples and source identities

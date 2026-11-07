@@ -193,7 +193,7 @@ OBS_SENTRY_RELEASE=situations@0.1.0   # optional; defaults to package version
 
 ```bash
 bun run src/cli.ts schema
-bun run src/cli.ts init     # once after an upgrade: declares + pins IndexEntry and NoticeHistory
+bun run src/cli.ts init     # once for a native home: declares and pins all eight schemas
 bun run src/cli.ts doctor   # read only: schemas, legacy copy, drift, unreadable entries
 # optional pin: bun run src/cli.ts init --schema-hash <canonical-hash> --notice-schema-hash <hash>
 bun run src/cli.ts put examples/forge-ci-containment.json
@@ -221,9 +221,9 @@ same `delivery_slice` / `lastdb.slice.v1` path as the kanban admin consumer
 
 | Record | Key | Fields |
 |--------|-----|--------|
-| `fsituations/SituationAdminSnapshot` | `posture-latest`, then `posture-latest/page-0001` … | captured_at, posture/notice counts + one page of each JSON list, schema_hashes_json |
-| `fsituations/SituationAdminPosture` | `<slug>` | slug, severity, status, summary, blocked_actions |
-| `fsituations/SituationAdminNotice` | `<slug>` | kind, at, title, summary, systems |
+| `situations/SituationAdminSnapshot` | `posture-latest`, then `posture-latest/page-0001` … | captured_at, posture/notice counts + one page of each JSON list, schema_hashes_json |
+| `situations/SituationAdminPosture` | `<slug>` | slug, severity, status, summary, blocked_actions |
+| `situations/SituationAdminNotice` | `<slug>` | kind, at, title, summary, systems |
 
 A format 7 or later home refuses a record above 64 KiB. One snapshot record
 with both full lists grows with every situation and notice: the CI seed of 64
@@ -283,21 +283,25 @@ bun run src/cli.ts schema --type all
 bun run src/cli.ts schema --type notice
 ```
 
-Setup requires LastDB API 13 or later (lastdb#803), `owned_app_schemas_v1`,
-`independent_hash_range_v1`, and the eight exact definitions in schema service.
-From API 13 the node owns the values of each declared schema, so setup refuses
-an older node. Setup saves the definition identities separately from the
-runtime addresses. The optional `--schema-hash` and
-`--notice-schema-hash` flags assert definition identities. They cannot replace
-the returned runtime address. Unsupported nodes and incomplete replies cause an error.
+Setup requires LastDB API 30 or later. The app and its registry manifest
+declare the same eight schemas under the `situations` namespace. Each schema
+declares its primary key separately from its record fields. Setup checks all
+definitions before declaring them and reads them back before saving their
+runtime addresses and definition identities. The optional `--schema-hash`
+and `--notice-schema-hash` flags assert identities before any declaration.
+
+Existing `fsituations` schemas and legacy configs require an explicit data
+conversion. Setup leaves them in place. The `fsituations` command and config
+path aliases still work with a native config.
 
 Canonical field reuse shares definitions only. The eight record types keep
 their own values. The publication records contain summaries; they do not use
 alternate keys on the full source records. A publication request uses the saved
 owned schemas and one batch for each bounded set of writes.
 
-The CLI still reads `~/.fsituations/config.json` as a compatibility fallback,
-and the migration leaves `~/.fsituations` as a symlink to `~/.situations`.
+The CLI checks the saved schema identities against the selected node.
+Partial edits preserve unmodified fields and metadata. A revision conflict
+causes the app to read the record again and recalculate its index changes.
 
 ### Index layout (a list that grows is one record per entry)
 
@@ -306,12 +310,12 @@ HTTP 413 `field_value_too_large`). A list that grows is therefore never one fiel
 schema kept every list as one JSON blob and its blobs measured 66 to 161 KB and
 grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
-- `fsituations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
+- `situations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
   blob is read to seed the partitions below and is never rewritten or deleted.
   `recent_notices` is read only by a node that has not run `situations init` yet.
-- `fsituations/IndexEntry_hashrange_v1` (HashRange, `ie_h` x `ie_r`): one record
+- `situations/IndexEntry` (HashRange): one record
   of at most 4 KiB per entry. No TTL.
-- `fsituations/NoticeHistory_hashrange_v1` (HashRange, `nh_h` x `nh_r`): the
+- `situations/NoticeHistory` (HashRange): the
   notice log, shaped for a node TTL. Its range key starts with 20 digits.
 
 | Schema | Partition (hash) | Entry key (range) | Entry holds |
@@ -393,7 +397,7 @@ fails on it.
 
 Proposed policy: `Notice` 90 days. The manifest TTL step is built separately. A policy has no
 backfill, must exist before the first write, and must name BOTH installed names
-of the schema (`fsituations/NoticeHistory` and its canonical hash). Entries
+of the schema (`situations/NoticeHistory` and its canonical hash). Entries
 written before a policy exists will never expire.
 
 #### Migration from the old blobs (per partition, nothing deleted, no scan)

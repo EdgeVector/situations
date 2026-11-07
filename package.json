@@ -20,7 +20,7 @@
     "@sentry/node": "^10.65.0"
   },
   "lastdb": {
-    "minApiVersion": 0
+    "minApiVersion": 30
   },
   "devDependencies": {
     "@types/bun": "latest",

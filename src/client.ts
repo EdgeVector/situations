@@ -1,26 +1,12 @@
-import { requireOwnedHome, ownedDeclaration, payload } from "./schema-mode.ts";
+import { requireOwnedHome, ownedDeclaration, object, payload } from "./schema-mode.ts";
 import { canonicalSchema, profilesFor } from "./canonical-vocabulary.ts";
 import { fieldAliasTransport, encodeFieldRequest, decodeFieldReply, localSchemaMetadata, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import type { SchemaDefinition } from "./schemas.ts";
-// LastDB node client for fsituations.
-//
-// As of the @lastdb/app-sdk port, the app DATA PLANE rides the SDK's
-// `LastDbClient` — the same wire client every LastDB app uses:
-//   - query/queryAll  → explicit keyed pages with opaque continuation cursors
-//   - create/update   → `LastDbClient.mutate`
-// SDK typed errors are translated back into fsituations' `FsituationsError`
-// registry (see `mapSdkDataError`).
-//
-// The additional node surface includes explicit schema maintenance, which the
-// app-data-plane SDK contract does not expose:
-//   - `GET /api/system/auto-identity` — resolve/provision the local owner hash.
-//   - `GET /api/schemas`              — list loaded schemas so `init` can pin
-//                                       the canonical fsituations/Situation hash.
-//   - `POST /api/apps/declare-schema` — Mini first-run orchestration for
-//                                       Schema Service registration/resolution.
-// Both are node-owner endpoints (no capability, no app scope), so they stay on
-// the raw fetch-over-UDS path below.
+import { coordinateId, readPage, writeRecords, type BatchMutationOp, type QueryFilter, type QueryRow } from "./native-records.ts";
+export type { BatchMutationOp, QueryFilter, QueryRow } from "./native-records.ts";
 
+// The SDK supplies the version handshake. The data plane sends complete native
+// records and uses the same owner transport as schema setup.
 import { existsSync } from "node:fs";
 
 import {
@@ -28,14 +14,7 @@ import {
   capabilityStoreKey,
   httpTransport,
   udsTransport,
-  CapabilityDeniedError,
-  NodeTooOldError,
-  PermissionDeniedError,
-  RequestRejectedError,
-  TransportError,
-  UnexpectedResponseError,
   type CapabilityStore as SdkCapabilityStore,
-  type JsonValue as SdkJsonValue,
   type NodeVersion as SdkNodeVersion,
   type Transport as SdkTransport,
 } from "@lastdb/app-sdk";
@@ -60,34 +39,11 @@ export class FsituationsError extends Error {
   }
 }
 
-export type QueryRow = {
-  fields: Record<string, unknown>;
-  key: { hash: string | null; range: string | null };
-};
-
 export type QueryResponse = {
   ok: boolean;
   results: QueryRow[];
   total_count?: number;
   returned_count?: number;
-};
-
-// Range-filter object forwarded verbatim to `/api/query`: `{ HashKey: "k" }`,
-// `{ HashRangeKey: { hash, range } }`, `{ HashRangeKeys: [[hash, range], ...] }`.
-export type QueryFilter = Record<string, unknown>;
-
-/**
- * One write of a batch. `update` is an upsert (the node writes the key whether
- * or not it exists; `must_exist` is opt-in and not used here), so callers never
- * read a key just to choose between create and update. `keyRange` addresses one
- * row of a HashRange schema; omit it for a Hash schema.
- */
-export type BatchMutationOp = {
-  mutationType: "update" | "delete";
-  schemaHash: string;
-  keyHash: string;
-  keyRange?: string;
-  fields: Record<string, unknown>;
 };
 
 type LoadedSchema = {
@@ -96,6 +52,7 @@ type LoadedSchema = {
   owner_app_id: string;
   fields: string[];
   identity_hash: string;
+  record_keys: unknown;
 };
 
 type AppSchemaDeclaration = {
@@ -126,6 +83,7 @@ export type NodeClient = {
   declareAppSchema(
     appId: string,
     schema: Record<string, unknown>,
+    intent?: "check",
   ): Promise<AppSchemaDeclaration>;
   createRecord(opts: {
     schemaHash: string;
@@ -172,6 +130,7 @@ const noopCapabilityStore: SdkCapabilityStore = {
 export function newNodeClient(opts: {
   schemaFieldAliases?: FieldAliasProfiles;
   canonicalVocabulary?: boolean;
+  schemaIdentitiesByAddress?: Record<string, string>;
   baseUrl: string;
   userHash: string;
   verbose?: Verbose;
@@ -179,7 +138,7 @@ export function newNodeClient(opts: {
   socketPath?: string;
 }): NodeClient {
   const fieldProfiles: FieldAliasProfiles = {...opts.schemaFieldAliases};
-  const canonicalVocabulary = opts.canonicalVocabulary ?? Boolean(opts.schemaFieldAliases);
+  const canonicalVocabulary = true;
   const baseUrl = stripTrailingSlash(opts.baseUrl);
   const verbose = opts.verbose ?? noopVerbose;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -191,19 +150,7 @@ export function newNodeClient(opts: {
     "X-LastDB-Client": "situations",
   });
 
-  // The SDK data-plane client. The transport carries X-User-Hash on every
-  // request (the production node's HTTP server is stateless — identity comes
-  // from the header); a UDS caller does not strictly need it, but passing it is
-  // harmless. Built lazily so `init` (which only touches the owner-only
-  // autoIdentity/listSchemas paths, often before a userHash is resolved) never
-  // pays for it.
-  // The client↔node version gate (app-sdk "Version handshake"). Resolved ONCE
-  // per client before the first request on either wire path (the SDK
-  // transport and `callJson`). With `MIN_LASTDB_API_VERSION` = 0 it resolves
-  // without IO; with a positive floor it reads `GET /api/version` and throws
-  // the SDK's NodeTooOldError — one line that names the fix — so a
-  // situations newer than the node stops before its first write, not on a
-  // bare 400 after it. The version route and `/health` are exempt.
+  // Resolve the version gate once before the first data or setup request.
   let apiVersionGate: Promise<void> | null = null;
   const requireNodeApiVersion = (path: string): Promise<void> => {
     if (isVersionGateExempt(path)) return Promise.resolve();
@@ -231,7 +178,7 @@ export function newNodeClient(opts: {
     return sdk;
   };
 
-  // Raw fetch-over-UDS, retained only for the hand-rolled owner-only endpoints.
+  // Data and schema setup share the owner transport and field vocabulary.
   async function callJson(
     method: "GET" | "POST",
     path: string,
@@ -251,26 +198,6 @@ export function newNodeClient(opts: {
     return { status: res.status, body: decodeFieldReply(path,body,parseBody(text),fieldProfiles) };
   }
 
-  async function mutate(
-    mutationType: "create" | "update",
-    schemaHash: string,
-    fields: Record<string, unknown>,
-    keyHash: string,
-    keyRange?: string,
-  ): Promise<void> {
-    verbose(`→ NODE POST /api/mutation (sdk) schema=${schemaHash} type=${mutationType}`);
-    try {
-      await client().mutate(schemaHash, {
-        mutationType,
-        fields: fields as Record<string, SdkJsonValue>,
-        key: { hash: keyHash, range: keyRange ?? null },
-      });
-      verbose(`← NODE POST /api/mutation status=200`);
-    } catch (err) {
-      throw mapSdkDataError(err, baseUrl, socketPath, "/api/mutation");
-    }
-  }
-
   let schemaReadiness: Promise<void> | undefined;
   const requireOwnedSetup = (): Promise<void> => schemaReadiness ??= (async () => {
     const [directory,version]=await Promise.all([callJson("GET","/api/schemas"),callJson("GET","/api/version")]);
@@ -278,6 +205,25 @@ export function newNodeClient(opts: {
     if (version.status!==200) throw mapNodeError(version.status,version.body,"/api/version");
     requireOwnedHome(directory.body,version.body);
   })();
+
+  let boundSchemas: Promise<void> | undefined;
+  const verifyBindings = (): Promise<void> => {
+    const expected = opts.schemaIdentitiesByAddress;
+    if (!expected) return Promise.resolve();
+    return boundSchemas ??= (async () => {
+      const { status, body } = await callJson("GET", "/api/schemas");
+      if (status !== 200) throw mapNodeError(status, body, "/api/schemas");
+      const directory = payload(body);
+      const rows = Array.isArray(directory.schemas) ? directory.schemas.map(object) : [];
+      const loaded = new Map(rows.filter((row) => row.owner_app_id === OWNER_APP_ID).map((row) => [row.name, row.identity_hash]));
+      if (directory.ready !== true || Object.entries(expected).some(([address, identity]) => loaded.get(address) !== identity)) {
+        throw new FsituationsError({
+          code: "native_schema_binding_mismatch",
+          message: "The selected node does not have the native Situations schemas saved in this config. Verify the node and config before retrying.",
+        });
+      }
+    })();
+  };
 
   return {
     canonicalVocabulary,
@@ -321,20 +267,20 @@ export function newNodeClient(opts: {
           descriptive_name: stringField(schema, "descriptive_name"),
           owner_app_id: stringField(schema, "owner_app_id"),
           identity_hash:stringField(schema,"identity_hash"),
+          record_keys:schema.record_keys,
           fields: Array.isArray(schema.fields)
             ? schema.fields.filter((field): field is string => typeof field === "string")
             : [],
         }); });
     },
-    async declareAppSchema(appId, schema) {
+    async declareAppSchema(appId, schema, intent) {
       const local = schema as unknown as SchemaDefinition;
       await requireOwnedSetup();
-      if (canonicalVocabulary) {
-        schema = canonicalSchema(local) as unknown as Record<string,unknown>;
-      }
+      schema = canonicalSchema(local) as unknown as Record<string,unknown>;
       const { status, body } = await callJson("POST", "/api/apps/declare-schema", {
         app_id: appId,
         schema,
+        ...(intent ? { intent } : {}),
       });
       if (status !== 200) throw mapNodeError(status, body, "/api/apps/declare-schema");
       const binding=ownedDeclaration(body,local.name);
@@ -342,7 +288,10 @@ export function newNodeClient(opts: {
       const canonical=binding.runtime;
       const schemaName=String(b.schema_name);
       const resolution=String(b.resolution ?? "");
-      if (canonicalVocabulary) Object.assign(fieldProfiles,profilesFor(local,[canonical,schemaName]));
+      if (intent === "check" && (b.intent !== "check" || b.dry_run !== true)) {
+        throw new Error("The node did not confirm a read-only schema check.");
+      }
+      if (!intent) Object.assign(fieldProfiles, profilesFor(local, [canonical, schemaName]));
       return {
         app_id: typeof b.app_id === "string" ? b.app_id : appId,
         schema: schemaName,
@@ -352,57 +301,47 @@ export function newNodeClient(opts: {
         decision: typeof b.decision === "string" ? b.decision : undefined,
       };
     },
-    async createRecord({ schemaHash, fields, keyHash, keyRange }) {
-      await mutate("create", schemaHash, fields, keyHash, keyRange);
+    async createRecord(op) {
+      await verifyBindings();
+      return writeRecords(callJson, [{ ...op, mutationType: "create" }], mapNodeError);
     },
-    async updateRecord({ schemaHash, fields, keyHash, keyRange }) {
-      await mutate("update", schemaHash, fields, keyHash, keyRange);
+    async updateRecord(op) {
+      await verifyBindings();
+      return writeRecords(callJson, [{ ...op, mutationType: "update" }], mapNodeError);
     },
     async mutateBatch(ops) {
-      if (ops.length === 0) return;
-      verbose(`→ NODE POST /api/mutations/batch count=${ops.length}`);
-      const { status, body } = await callJson("POST", "/api/mutations/batch", {
-        mutations: ops.map((op) => ({
-          type: "mutation",
-          schema: op.schemaHash,
-          fields_and_values: op.fields,
-          key_value: { hash: op.keyHash, range: op.keyRange ?? null },
-          mutation_type: op.mutationType,
-        })),
-        convergence: "async",
-      });
-      verbose(`← NODE POST /api/mutations/batch status=${status}`);
-      if (status !== 200) throw mapNodeError(status, body, "/api/mutations/batch");
-      const result=payload(body);
-      const operations=result.operations as {total?:number}|undefined;
-      if(result.ok!==true||result.count!==ops.length||operations?.total!==ops.length||!Array.isArray(result.mutation_ids)||result.mutation_ids.length!==ops.length||result.mutation_ids.some((id)=>typeof id!=="string"||!id)) {
-        throw new Error("The mutation batch did not confirm every accepted write.");
-      }
+      if (!ops.length) return;
+      await verifyBindings();
+      return writeRecords(callJson, ops, mapNodeError);
     },
-    async queryAll({schemaHash,fields,filter,pageSize}) {
-      if(!filter)throw new Error("A query requires known keys.");
-      const limit=Math.min(1000,Math.max(1,pageSize??100));
-      const rows:QueryRow[]=[];
-      const seen=new Set<string>();
-      let cursor:unknown;
-      for(let page=0;page<1000;page++){
-        const requestBody={schema_name:schemaHash,fields,filter,limit,...(cursor===undefined?{}:{cursor})};
-        const response=await callJson("POST","/api/query",requestBody);
-        if(response.status!==200)throw mapNodeError(response.status,response.body,"/api/query");
-        const result=payload(response.body);
-        if(result.ok!==true||typeof result.has_more!=="boolean"||!Array.isArray(result.results))throw new Error("The query is incomplete.");
-        for(const item of result.results){
-          const row=item as QueryRow;
-          if(!row||typeof row!=="object"||!row.key||typeof row.key.hash!=="string"||!(row.key.range===null||typeof row.key.range==="string")||!row.fields||typeof row.fields!=="object")throw new Error("The query returned a malformed record.");
-          if(typeof filter.HashKey==="string"&&row.key.hash!==filter.HashKey)throw new Error("The query returned a different hash.");
+    async queryAll({ schemaHash, filter, pageSize }) {
+      if (!filter) throw new Error("A query requires known keys.");
+      await verifyBindings();
+      const limit = Math.min(1000, Math.max(1, pageSize ?? 100));
+      const rows: QueryRow[] = [];
+      const seenKeys = new Set<string>();
+      const seenCursors = new Set<string>();
+      let cursor: unknown;
+      for (let page = 0; page < 1000; page++) {
+        const requestBody = { schema_name: schemaHash, filter, limit, ...(cursor === undefined ? {} : { cursor }) };
+        const response = await callJson("POST", "/api/query", requestBody);
+        if (response.status !== 200) throw mapNodeError(response.status, response.body, "/api/query");
+        const result = readPage(response.body, filter);
+        for (const row of result.rows) {
+          const id = coordinateId(schemaHash, row.key);
+          if (seenKeys.has(id)) throw new Error("The query returned the same key on multiple pages.");
+          seenKeys.add(id);
           rows.push(row);
         }
-        if(rows.length>QUERY_MAX_ROWS)throw new Error("The query exceeds its complete-result limit.");
-        if(!result.has_more)return{ok:true,results:rows,total_count:rows.length,returned_count:rows.length};
-        const next=result.next_cursor;
-        const encoded=JSON.stringify(next);
-        if(next===undefined||next===null||next===""||seen.has(encoded))throw new Error("The query lacks a fresh continuation cursor.");
-        seen.add(encoded);cursor=next;
+        if (rows.length > QUERY_MAX_ROWS) throw new Error("The query exceeds its complete-result limit.");
+        if (!result.hasMore) return { ok: true, results: rows, total_count: rows.length, returned_count: rows.length };
+        const next = result.cursor;
+        const encoded = JSON.stringify(next);
+        if (next === undefined || next === null || next === "" || seenCursors.has(encoded)) {
+          throw new Error("The query lacks a fresh continuation cursor.");
+        }
+        seenCursors.add(encoded);
+        cursor = next;
       }
       throw new Error("The query page limit stopped an incomplete result.");
     },
@@ -540,45 +479,6 @@ function mapNodeError(status: number, body: unknown, path: string): FsituationsE
   const code = bodyError(body) ?? `http_${status}`;
   const message = bodyMessage(body) ?? `LastDB node ${path} failed with HTTP ${status}${rawBodySuffix(body)}.`;
   return new FsituationsError({ code, message });
-}
-
-// Translate the SDK's typed data-plane errors back into fsituations' error
-// registry, preserving the same code/message shape the raw path produced. The
-// SDK maps each discriminated node response 1:1, so this stays a small table.
-function mapSdkDataError(
-  err: unknown,
-  baseUrl: string,
-  socketPath: string | undefined,
-  path: string,
-): FsituationsError {
-  // CapabilityDeniedError subclasses PermissionDeniedError — check it first.
-  if (err instanceof CapabilityDeniedError) {
-    return mapNodeError(403, { status: 403, reason: err.reason }, path);
-  }
-  if (err instanceof PermissionDeniedError) {
-    return mapNodeError(403, { kind: "permission_denied", error: err.reason }, path);
-  }
-  // NB: NodeTooOldError subclasses RequestRejectedError — order matters. Its
-  // message is already the one line an operator needs; wrapping it as
-  // "HTTP 400" would bury the fact that the NODE is the side that moved.
-  if (err instanceof NodeTooOldError) {
-    return new FsituationsError({ code: "node_too_old", message: err.message, cause: err });
-  }
-  if (err instanceof RequestRejectedError) {
-    return mapNodeError(400, err.body ?? { kind: err.kind, error: err.message }, path);
-  }
-  if (err instanceof UnexpectedResponseError) {
-    return mapNodeError(err.status, err.body, path);
-  }
-  if (err instanceof TransportError) {
-    return connectionError(baseUrl, socketPath, err);
-  }
-  if (err instanceof FsituationsError) return err;
-  return new FsituationsError({
-    code: "sdk_error",
-    message: `SDK call to ${path} failed: ${err instanceof Error ? err.message : String(err)}.`,
-    cause: err,
-  });
 }
 
 function connectionError(baseUrl: string, socketPath: string | undefined, err: unknown): FsituationsError {

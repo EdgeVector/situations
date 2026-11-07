@@ -269,7 +269,7 @@ export async function publishPostureStatus(
     ...publication.notices.map((fields)=>({schemaHash:schemaHashes.notice,keyHash:requiredField(fields,"slug"),fields})),
     ...[...later,first!].map((fields)=>({schemaHash:schemaHashes.snapshot,keyHash:requiredField(fields,"slug"),fields})),
   ];
-  // Native update is an upsert. Collect the independent writes without point-read probes.
+  // The client reads destination preimages in batches before conditional writes.
   const writes=records.map(({schemaHash,keyHash,fields})=>({schemaHash,keyHash,fields,mutationType:"update" as const}));
   await commitOps(node,writes);
 

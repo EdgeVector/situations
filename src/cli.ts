@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import pkg from "../package.json" with { type: "json" };
 import { FsituationsError, newNodeClient } from "./client.ts";
+import { RecordConflict } from "./native-records.ts";
 import {
   ConfigInvalidError,
   ConfigMissingError,
@@ -48,7 +49,7 @@ import {
   renderNotice,
   renderNoticesList,
   requireNotice,
-  considerLegacyLongLivedNotices,
+  seedLongLivedNotices,
   upsertNotice,
   type NoticeInput,
 } from "./notice.ts";
@@ -120,10 +121,9 @@ Options:
   --notice-schema-hash <hash>  assert the canonical Notice definition identity
   --config <path>              write config path
 
-Setup requires LastDB API 13 or later, owned_app_schemas_v1,
-independent_hash_range_v1, and eight registered definitions in schema service.
-It saves the definition identities separately from the runtime addresses.
-An older node is refused. No unsupported fallback follows.`;
+Setup requires LastDB API 30 or later. It checks and declares eight native
+schemas, then saves their definition identities and runtime addresses.
+Existing legacy configs or schemas require an explicit data conversion.`;
     case "put":
       return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
@@ -528,94 +528,52 @@ async function initCmd(rest: string[]): Promise<number> {
     baseUrl: nodeUrl, userHash: identity.userHash,
     socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
   });
-  const resolved = await resolveOrDeclareSchemaHashes(node, {
-    quiet: Boolean(parsed.values.json), expectedIdentities: existing?.schemaIdentities,
+  const { schemaHashes, schemaIdentities } = await resolveOrDeclareSchemaHashes(node, {
+    quiet: Boolean(parsed.values.json),
+    expectedIdentities: existing?.schemaIdentities,
+    requestedPins: {
+      situation: parsed.values["schema-hash"],
+      notice: parsed.values["notice-schema-hash"],
+    },
   });
-  const declared=resolved.schemaHashes;
-  const situationHash = declared.situation;
-  const noticeHash = declared.notice;
-  const indexHash = declared.index;
-  const indexEntryHash = declared.index_entry;
-  const noticeHistoryHash = declared.notice_history;
-
-  if (!situationHash) {
-    throw new FsituationsError({
-      code: "schema_not_loaded",
-      message: "No loaded situations/Situation schema was found on the node.",
-      hint: "Publish/load the schema from `situations schema --type situation --json`, or pass --schema-hash.",
-    });
-  }
-
-  const schemaHashes: Record<string, string> = {...declared, situation: situationHash };
-  if (noticeHash) schemaHashes.notice = noticeHash;
-  if (indexHash) schemaHashes.index = indexHash;
-  if (indexEntryHash) schemaHashes.index_entry = indexEntryHash;
-  if (noticeHistoryHash) schemaHashes.notice_history = noticeHistoryHash;
-
-  if (((parsed.values["schema-hash"] && parsed.values["schema-hash"] !== resolved.schemaIdentities.situation) ||
-      (parsed.values["notice-schema-hash"] && parsed.values["notice-schema-hash"] !== resolved.schemaIdentities.notice))) {
-    throw new FsituationsError({code:"canonical_schema_pin_mismatch",message:"The supplied schema identity differs from its canonical declaration. No config change occurred."});
-  }
+  const { situation, notice, index, index_entry, notice_history } = schemaHashes;
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
     nodeUrl,
     schemaServiceUrl: parsed.values["schema-service-url"] ?? "",
     userHash: identity.userHash,
     schemaHashes,
-    schemaIdentities:resolved.schemaIdentities,
+    schemaIdentities,
     schemaFieldAliases: canonicalProfilesForHashes(schemaHashes),
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath, previousConfig);
   // One-time: the long-lived notices still live in the legacy `recent_notices`
   // blob get their entries, so the default `notices` list shows them.
-  let legacyLongLivedConsidered = 0;
-  if (indexEntryHash && noticeHistoryHash) {
-    try {
-      const seedNode = newNodeClient({
-        baseUrl: nodeUrl, schemaFieldAliases:cfg.schemaFieldAliases,
-        userHash: identity.userHash,
-        socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
-      });
-      legacyLongLivedConsidered = await considerLegacyLongLivedNotices(seedNode, cfg, {
-        entry: indexEntryHash,
-        notice: noticeHistoryHash,
-      });
-    } catch (err) {
-      console.error(
-        `warning: could not seed the long-lived notices from the legacy blob: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+  let seededLongLivedNotices = 0;
+  try {
+    seededLongLivedNotices = await seedLongLivedNotices(node, cfg, {
+      entry: index_entry!,
+      notice: notice_history!,
+    });
+  } catch (err) {
+    console.error(
+      `warning: could not seed the long-lived notices from the legacy blob: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
-  const result = {
-    config: cfgPath,
-    schemaHash: situationHash,
-    noticeSchemaHash: noticeHash ?? null,
-    indexSchemaHash: indexHash ?? null,
-    indexEntrySchemaHash: indexEntryHash ?? null,
-    noticeHistorySchemaHash: noticeHistoryHash ?? null,
-    legacyLongLivedNoticesConsidered: legacyLongLivedConsidered,
-    userHash: identity.userHash,
-  };
   if (parsed.values.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({
+      config: cfgPath,
+      schemaHash: situation,
+      noticeSchemaHash: notice,
+      indexSchemaHash: index,
+      indexEntrySchemaHash: index_entry,
+      noticeHistorySchemaHash: notice_history,
+      seededLongLivedNotices,
+      userHash: identity.userHash,
+    }, null, 2));
   } else {
     console.log(`wrote ${cfgPath}`);
-    if (!noticeHash) {
-      console.error(
-        "warning: Notice schema not declared/loaded — `situations notices` will not work until re-init on Mini or pass --notice-schema-hash.",
-      );
-    }
-    if (!indexHash) {
-      console.error(
-        "warning: Index schema not declared/loaded — list/preflight/notices require re-init on Mini; product-schema scans are not supported.",
-      );
-    }
-    if (!indexEntryHash || !noticeHistoryHash) {
-      console.error(
-        "warning: IndexEntry or NoticeHistory schema not declared/loaded — `put` and `notice` will fail and reads use the legacy Index blobs until re-init on Mini.",
-      );
-    }
   }
   return 0;
 }
@@ -1330,6 +1288,7 @@ if (import.meta.main) {
     .catch((err) => {
       if (
         err instanceof FsituationsError ||
+        err instanceof RecordConflict ||
         err instanceof ConfigMissingError ||
         err instanceof ConfigInvalidError
       ) {

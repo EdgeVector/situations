@@ -19,8 +19,6 @@ export type BatchMutationOp = {
   fields: Fields;
   /** The revision or absence used to derive this write, when already read. */
   preimage?: QueryRow | null;
-  /** Legacy seed: leave a current record alone if one already exists. */
-  seedIfAbsent?: boolean;
 };
 
 export class RecordConflict extends Error {
@@ -118,7 +116,6 @@ async function readChunk(call: Call, ops: BatchMutationOp[], mapError: NodeError
 }
 
 function nativeOperation(op: BatchMutationOp, current: QueryRow | null) {
-  if (current && op.seedIfAbsent) return null;
   if (current && op.mutationType === "create") throw new RecordConflict();
   if (!current && op.mutationType === "delete") return null;
   const deleting = op.mutationType === "delete";

@@ -657,22 +657,31 @@ async function listNoticesIndexedLegacy(
  * legacy `recent_notices` blob (it held every non-expired notice of 14 days) get
  * their entries. Idempotent; writes only entries of those notices.
  */
-export async function considerLegacyLongLivedNotices(
+export async function seedLongLivedNotices(
   node: NodeClient,
   cfg: Config,
   layout: Layout,
 ): Promise<number> {
-  const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
-  const now = new Date();
-  const ops: BatchMutationOp[] = [];
-  for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
-    if (raw === null || typeof raw !== "object") continue;
-    const notice = normalizeNotice(raw as NoticeInput);
-    if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
-    ops.push({ ...putOp(layout, "long", NOTICE_LONG_KEY, longRange(notice), noticeEntryPayload(notice)), seedIfAbsent: true });
-  }
-  await commitOps(node, ops);
-  return ops.length;
+  return withRecordWrite(node, async (node) => {
+    const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
+    const now = new Date();
+    const candidates = new Map<string, BatchMutationOp>();
+    for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
+      if (raw === null || typeof raw !== "object") continue;
+      const notice = normalizeNotice(raw as NoticeInput);
+      if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
+      const range = longRange(notice);
+      candidates.set(range, putOp(layout, "long", NOTICE_LONG_KEY, range, noticeEntryPayload(notice)));
+    }
+    if (!candidates.size) return 0;
+    const existing = await node.queryAll({ schemaHash: layout.entry, fields: [], filter: { HashKey: NOTICE_LONG_KEY } });
+    for (const { key } of existing.results) {
+      if (key.range !== null) candidates.delete(key.range);
+    }
+    const ops = [...candidates.values()];
+    await commitOps(node, ops);
+    return ops.length;
+  });
 }
 
 /**

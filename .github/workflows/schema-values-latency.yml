@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verify_registry:
+        description: "Also verify the signed PROD listing and managed CLI for this exact main commit"
+        type: choice
+        options: [none, next, stable]
+        default: none
 permissions:
   contents: read
   actions: read
@@ -112,6 +118,7 @@ jobs:
           BEFORE_OID: ${{ steps.nightly.outputs.before_oid || steps.nightly.outputs.oid }}
           BEFORE_VERSION: ${{ steps.nightly.outputs.before_version || steps.nightly.outputs.version }}
           BEFORE_SHA256: ${{ steps.nightly.outputs.before_sha256 || steps.nightly.outputs.sha256 }}
+          VERIFY_REGISTRY: ${{ inputs.verify_registry || 'none' }}
         run: |
           python3 candidate/scripts/schema-values-latency.py \
             --baseline "$GITHUB_WORKSPACE/baseline" --baseline-revision "$APP_BEFORE" \
@@ -122,6 +129,7 @@ jobs:
             --before-daemon "$BEFORE_LASTDBD" --before-daemon-revision "$BEFORE_OID" \
             --before-daemon-version "$BEFORE_VERSION" --before-daemon-archive-sha256 "$BEFORE_SHA256" \
             --lastdb-source "$GITHUB_WORKSPACE/lastdb" --records 64 \
+            --verify-registry "$VERIFY_REGISTRY" \
             --output "$RUNNER_TEMP/situations-results"
       - name: Retain definition results
         if: always()

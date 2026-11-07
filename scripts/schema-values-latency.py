@@ -102,10 +102,7 @@ def nightly_node(Node, expected_version):
     return NightlyNode
 
 
-def arm(args, Node, cleanup, label, pair):
-    output = args.output / f"pair-{pair}-{label}"
-    output.mkdir(mode=0o700)
-    prefix = "before_daemon" if label == "baseline" else "daemon"
+def owned_node(args, Node, output, prefix):
     binary, revision, expected_version = (
         getattr(args, prefix + suffix) for suffix in ("", "_revision", "_version")
     )
@@ -115,6 +112,73 @@ def arm(args, Node, cleanup, label, pair):
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
     # Use the product CLI's normal socket path inside this CI-owned home.
     node.socket = node.home / "data" / "folddb.sock"
+    return node, revision, expected_version
+
+
+def verify_registry(args, Node):
+    channel = args.verify_registry
+    output = args.output / f"signed-{channel}"
+    output.mkdir(mode=0o700)
+    node, revision, _ = owned_node(args, Node, output, "daemon")
+    try:
+        home = node.root / "user"
+        home.mkdir(mode=0o700)
+        app_root = node.root / "managed"
+        cli = [str(args.daemon.with_name("lastdb")), "--data-dir", str(node.home)]
+        app = [str(home / ".local/bin/situations")]
+        env = {"PATH": os.environ["PATH"], "HOME": str(home), "LASTDB_HOME": str(node.home),
+               "LASTDB_APPS_ROOT": str(app_root), "SITUATIONS_CONFIG": str(home / "situations.json"),
+               "LASTDB_SUPPRESS_RECOVERY_PHRASE": "1", "GIT_TERMINAL_PROMPT": "0"}
+
+        def run(phase, command, *, value=None, read_json=False):
+            with (output / f"{phase}.stderr").open("w") as err:
+                result = subprocess.run(command, input=json.dumps(value) if value is not None else "",
+                                        env=env, cwd=home, stdout=subprocess.PIPE, stderr=err,
+                                        text=True, check=True, timeout=300)
+            return json.loads(result.stdout) if read_json else None
+
+        node.start()
+        cloud_off(node, output, "start")
+        api = node.api_version
+        listing = run("resolve", cli + ["app", "list", "situations", "--channel", channel, "--json"],
+                      read_json=True)
+        require(listing.get("app_id") == "situations" and listing.get("channel") == channel
+                and listing.get("sha") == args.candidate_revision and listing.get("api_version") == api
+                and listing.get("source") == "https://github.com/EdgeVector/situations.git",
+                "The pinned signed list does not name this exact Situations source and API")
+        run("install", cli + ["app", "install", "situations", "--channel", channel, "--accept-install", "--json"])
+        status, = run("status", cli + ["app", "status", "situations", "--check", "--json"], read_json=True)
+        require(status.get("state") == "current" and status.get("installed_release") == args.candidate_revision
+                and status["receipt"]["trust"].startswith("pinned:") and status["receipt"]["listing"] == listing
+                and Path(app[0]).resolve().is_relative_to(app_root),
+                "The active link or managed receipt does not match the signed release")
+        run("init", app + ["init"])
+        record = {"slug": "ci-registry-reopen", "title": "Registry managed operation",
+                  "summary": "Before update", "severity": "p3", "status": "active",
+                  "scope_repos": ["EdgeVector/situations"]}
+        run("create", app + ["put", "-"], value=record)
+        run("update", app + ["put", "-"], value={"slug": record["slug"], "summary": "After update"})
+        node.stop()
+        node.start()
+        cloud_off(node, output, "reopen")
+        observed = run("reopen-read", app + ["show", record["slug"], "--json"], read_json=True)
+        require(observed.get("summary") == "After update" and observed.get("title") == record["title"]
+                and observed.get("scope_repos") == record["scope_repos"],
+                "The installed app did not retain the edit and unrelated fields after reopening")
+        result = {"channel": channel, "sha": args.candidate_revision, "api_version": api,
+                  "daemon_revision": revision, "managed_install": True, "reopen_read": True}
+    finally:
+        node.close()
+    require(not node.root.exists(), "The signed install proof did not remove its owned home")
+    save(output / "result.json", {**result, "cleanup": True})
+    return f"Signed PROD {channel}: exact managed install, app write/update/reopen, and cleanup passed.\n"
+
+
+def arm(args, Node, cleanup, label, pair):
+    output = args.output / f"pair-{pair}-{label}"
+    output.mkdir(mode=0o700)
+    prefix = "before_daemon" if label == "baseline" else "daemon"
+    node, revision, expected_version = owned_node(args, Node, output, prefix)
     try:
         node.start()
         # The home marker exists after the first start. Record the format the nightly writes.
@@ -209,9 +273,16 @@ def main():
                  "before-daemon-archive-sha256"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--records", type=int, default=64)
+    parser.add_argument("--verify-registry", choices=("none", "next", "stable"), default="none")
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "Hosted CI only")
     require(64 <= args.records <= 256, "Use a declared 64 to 256 record seed")
+    if args.verify_registry != "none":
+        require(os.environ.get("GITHUB_REPOSITORY") == "EdgeVector/situations"
+                and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                and os.environ.get("GITHUB_REF") == "refs/heads/main"
+                and os.environ.get("GITHUB_SHA") == args.candidate_revision,
+                "Signed verification is a manual operation on the exact main source only")
     require(all(re.fullmatch(r"[a-f0-9]{40}", getattr(args, name)) for name in
                 ("baseline_revision", "candidate_revision", "daemon_revision", "before_daemon_revision")),
             "Exact source revisions are required")
@@ -241,14 +312,17 @@ def main():
     from node import Node, file_hash
     import cleanup
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
-              "binary_sha256": {"daemon": file_hash(args.daemon), "before_daemon": file_hash(args.before_daemon)},
+              "binary_sha256": {"daemon": file_hash(args.daemon), "before_daemon": file_hash(args.before_daemon),
+                                "cli": file_hash(args.daemon.with_name("lastdb"))},
               "arms": []}
     try:
         for pair, order in enumerate((("baseline", "candidate"), ("candidate", "baseline"))):
             for label in order:
                 result["arms"].append(arm(args, Node, cleanup, label, pair))
+        signed = verify_registry(args, Node) if args.verify_registry != "none" else ""
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:
             stream.write(render(args, result["arms"]))
+            stream.write(signed)
         result["complete"] = True
     finally:
         save(args.output / "comparison.json", result)

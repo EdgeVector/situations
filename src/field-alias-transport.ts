@@ -34,15 +34,8 @@ function encodeItem(input: unknown, profiles: FieldAliasProfiles): unknown {
   if (!value) return input;
   const result = {...value};
   const aliases = profile(value, profiles);
-  if (aliases) {
-    for (const key of ["fields", "fields_and_values"]) {
-      const fields = value[key];
-      if (Array.isArray(fields)) result[key] = fields.map((field) => typeof field === "string" ? rename(field, aliases, true) : field);
-      else if (object(fields)) result[key] = renameObject(fields as ObjectValue, aliases, true);
-    }
-    const expected = object(value.expected);
-    if (expected && typeof expected.field === "string") result.expected = {...expected, field:rename(expected.field, aliases, true)};
-  }
+  const record = object(value.record);
+  if (aliases && record) result.record = renameObject(record, aliases, true);
   for (const key of ["queries", "mutations", "keys"]) {
     if (Array.isArray(value[key])) result[key] = (value[key] as unknown[]).map((item) => encodeItem(item, profiles));
   }

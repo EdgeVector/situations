@@ -4,9 +4,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSyn
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { RecordType } from "./schemas.ts";
+import { APP_SCHEMAS } from "./schema-layout.ts";
+import { OWNER_APP_ID, type RecordType } from "./schemas.ts";
 
-export const CONFIG_VERSION = 2;
+export const CONFIG_VERSION = 3;
 
 export type Config = {
   schemaFieldAliases?: FieldAliasProfiles;
@@ -116,17 +117,23 @@ function assertConfigShape(path: string, raw: unknown): Config {
     }
     schemaHashes[k] = v;
   }
+  const schemaIdentities = parseIdentities(path, r.schemaIdentities);
+  if (r.configVersion !== CONFIG_VERSION || Object.keys(schemaHashes).length !== APP_SCHEMAS.length ||
+      !schemaIdentities || Object.keys(schemaIdentities).length !== APP_SCHEMAS.length ||
+      APP_SCHEMAS.some(({ key, definition }) => schemaHashes[key] !== `${OWNER_APP_ID}/${definition.name}` || !Object.hasOwn(schemaIdentities, key))) {
+    throw new ConfigInvalidError(path, "this config does not bind the native Situations schemas. Keep the old config and convert legacy data explicitly before switching to a native home.");
+  }
   const schemaServiceUrl = typeof r.schemaServiceUrl === "string" ? r.schemaServiceUrl : "";
   const nodeSocketPath =
     typeof r.nodeSocketPath === "string" && r.nodeSocketPath.length > 0 ? r.nodeSocketPath : undefined;
   return {
     schemaFieldAliases:configFieldAliases(path, r.schemaFieldAliases),
-    configVersion: typeof r.configVersion === "number" ? r.configVersion : CONFIG_VERSION,
+    configVersion: CONFIG_VERSION,
     nodeUrl: r.nodeUrl as string,
     schemaServiceUrl,
     userHash: r.userHash as string,
     schemaHashes,
-    schemaIdentities:parseIdentities(path,r.schemaIdentities),
+    schemaIdentities,
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
 }
@@ -138,13 +145,11 @@ function configFieldAliases(path: string, input: unknown): FieldAliasProfiles | 
   }
 }
 
-/** Init recovers the vocabulary mode from the node if the old config is invalid.
- * Other commands still use readConfig and fail on invalid configuration.
- */
+/** An existing legacy or malformed config must never be silently replaced. */
 export function readConfigForInit(path: string = defaultConfigPath()): Config | null {
   try { return readConfig(path); }
   catch (error) {
-    if (error instanceof ConfigMissingError || error instanceof ConfigInvalidError) return null;
+    if (error instanceof ConfigMissingError) return null;
     throw error;
   }
 }

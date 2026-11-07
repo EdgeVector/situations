@@ -1,4 +1,4 @@
-export const OWNER_APP_ID = "fsituations";
+export const OWNER_APP_ID = "situations";
 
 export type FieldType = "String" | "DateTime" | { Array: "String" };
 
@@ -8,7 +8,10 @@ export type SchemaDefinition = {
   descriptive_name: string;
   purpose_statement?: string;
   schema_type: "Hash" | "HashRange";
-  key: { hash_field: string; range_field?: string };
+  record_keys: {
+    primary: { kind: "hash" } | { kind: "hash_range"; range_type: "String" };
+    alternates: Record<string, never>;
+  };
   fields: string[];
   field_types: Record<string, FieldType>;
   field_descriptions: Record<string, string>;
@@ -129,7 +132,7 @@ export const situationSchema: AddSchemaRequest = {
     purpose_statement:
       "A current operational posture record with scope, phases, links, and agent-facing preflight policy",
     schema_type: "Hash",
-    key: { hash_field: "slug" },
+    record_keys: { primary: { kind: "hash" }, alternates: {} },
     fields: [...SITUATION_FIELDS],
     field_types: fieldTypes(SITUATION_FIELDS, SITUATION_ARRAY_FIELDS),
     field_descriptions: {
@@ -177,7 +180,7 @@ export const noticeSchema: AddSchemaRequest = {
     purpose_statement:
       "A time-stamped non-blocking FYI about an agent-impacting change (upgrade, restart, deploy) so other agents can attribute flapping instead of opening false incidents",
     schema_type: "Hash",
-    key: { hash_field: "slug" },
+    record_keys: { primary: { kind: "hash" }, alternates: {} },
     fields: [...NOTICE_FIELDS],
     field_types: fieldTypes(NOTICE_FIELDS, NOTICE_ARRAY_FIELDS),
     field_descriptions: {
@@ -225,7 +228,7 @@ export const indexSchema: AddSchemaRequest = {
     purpose_statement:
       "Legacy read-only rollup blobs (active situations, notice and situation history by day); superseded by the IndexEntry and NoticeHistory partitions",
     schema_type: "Hash",
-    key: { hash_field: "key" },
+    record_keys: { primary: { kind: "hash" }, alternates: {} },
     fields: [...INDEX_FIELDS],
     field_types: fieldTypes(INDEX_FIELDS, []),
     field_descriptions: {
@@ -294,7 +297,7 @@ export const indexEntrySchema: AddSchemaRequest = {
     purpose_statement:
       "One small index entry per HashRange record (partition x entry key) so the active-situation set and situation history are read with a keyed range query and grown with one small write, never as one rewritten blob",
     schema_type: "HashRange",
-    key: { hash_field: "ie_h", range_field: "ie_r" },
+    record_keys: { primary: { kind: "hash_range", range_type: "String" }, alternates: {} },
     fields: [...INDEX_ENTRY_FIELDS],
     field_types: fieldTypes(INDEX_ENTRY_FIELDS, []),
     field_descriptions: {
@@ -347,7 +350,7 @@ export const noticeHistorySchema: AddSchemaRequest = {
     purpose_statement:
       "One notice history entry per HashRange record (UTC day partition x creation time and slug) so notice history is read by day and expires by a node TTL, never as one rewritten blob",
     schema_type: "HashRange",
-    key: { hash_field: "nh_h", range_field: "nh_r" },
+    record_keys: { primary: { kind: "hash_range", range_type: "String" }, alternates: {} },
     fields: [...NOTICE_HISTORY_FIELDS],
     field_types: fieldTypes(NOTICE_HISTORY_FIELDS, []),
     field_descriptions: {

@@ -1,5 +1,5 @@
 import { APP_SCHEMAS } from "./schema-layout.ts";
-import { nodeOwnsValues, requireOwnedHome } from "./schema-mode.ts";
+import { nodeOwnsValues, object, requireOwnedHome } from "./schema-mode.ts";
 import { profilesFor } from "./canonical-vocabulary.ts";
 import type { FieldAliasProfiles } from "./field-alias-transport.ts";
 import { FsituationsError, type NodeClient } from "./client.ts";
@@ -25,7 +25,7 @@ const TARGETS: SchemaTarget[] = APP_SCHEMAS.map(({ key, definition }) => ({
 /** Explicit setup checks the whole app before it declares eight owned schemas. */
 export async function resolveOrDeclareSchemaHashes(
   node: NodeClient,
-  opts: { quiet?: boolean; canonicalVocabulary?: boolean } = {},
+  opts: { quiet?: boolean; expectedIdentities?: Record<string, string> } = {},
 ): Promise<{
   schemaHashes: Record<string, string>;
   schemaIdentities: Record<string, string>;
@@ -39,6 +39,33 @@ export async function resolveOrDeclareSchemaHashes(
       "The selected node did not confirm its schema capabilities.",
     );
   requireOwnedHome({ ready: true, schemas: loaded }, version.body);
+  const targets = new Map(TARGETS.map(({ schema }) => [schema.schema.descriptive_name, schema.schema]));
+  for (const installed of loaded) {
+    const target = targets.get(installed.descriptive_name);
+    if (installed.owner_app_id === "fsituations" || (installed.owner_app_id === OWNER_APP_ID && target &&
+        (installed.name !== `${OWNER_APP_ID}/${target.name}` || !matchesKeys(installed.record_keys, target.record_keys)))) {
+      throw new FsituationsError({
+        code: "legacy_schema_conversion_required",
+        message: "The selected node has legacy Situations schemas. Convert their records explicitly before registering the native definitions.",
+      });
+    }
+  }
+  // Preview the whole application before any declaration, including existing
+  // field definitions, key layouts, and any identity pins from a saved config.
+  const previews = await Promise.all(TARGETS.map(({ schema }) =>
+    node.declareAppSchema(OWNER_APP_ID, schema.schema as unknown as Record<string, unknown>, "check"),
+  ));
+  if (previews.some((preview, index) => {
+    const target = TARGETS[index]!;
+    const installed = loaded.find((schema) => schema.name === preview.canonical);
+    const expected = opts.expectedIdentities?.[target.key];
+    return (installed && installed.identity_hash !== preview.identity) || (expected && expected !== preview.identity);
+  })) {
+    throw new FsituationsError({
+      code: "native_schema_identity_mismatch",
+      message: "A Situations definition differs from the existing node or config. Convert or resolve it explicitly before setup.",
+    });
+  }
   const schemaHashes: Record<string, string> = {};
   const schemaIdentities: Record<string, string> = {};
   await Promise.all(
@@ -56,6 +83,14 @@ export async function resolveOrDeclareSchemaHashes(
     }),
   );
   return { schemaHashes, schemaIdentities };
+}
+
+function matchesKeys(value: unknown, expected: AddSchemaRequest["schema"]["record_keys"]): boolean {
+  const keys = object(value);
+  const primary = object(keys.primary);
+  const rangeType = expected.primary.kind === "hash_range" ? expected.primary.range_type : undefined;
+  return primary.kind === expected.primary.kind && primary.range_type === rangeType &&
+    primary.allow_absent !== true && keys.alternates !== undefined && Object.keys(object(keys.alternates)).length === 0;
 }
 
 /**
@@ -120,7 +155,9 @@ function pickLoadedHash(
   const candidates = loaded.filter(
     (schema) =>
       schema.owner_app_id === OWNER_APP_ID &&
-      schema.descriptive_name === target.schema.schema.descriptive_name,
+      schema.descriptive_name === target.schema.schema.descriptive_name &&
+      schema.name === `${OWNER_APP_ID}/${target.schema.schema.name}` &&
+      matchesKeys(schema.record_keys, target.schema.schema.record_keys),
   );
   const full = candidates.find((schema) =>
     target.schema.schema.fields.every((field) => schema.fields.includes(field)),

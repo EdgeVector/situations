@@ -1,3 +1,4 @@
+import { withRecordWrite } from "./write-context.ts";
 import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import {
@@ -970,28 +971,30 @@ export async function upsertSituation(
   input: SituationInput,
   opts: { allowProseOnly?: boolean } = {},
 ): Promise<{ situation: Situation; action: "created" | "updated" }> {
-  // A write that cannot be indexed fails before it writes anything.
-  const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
-  const existing = await fetchSituationRaw(node, cfg, input.slug);
-  const situation = normalizeSituation(input, existing ?? undefined);
-  rejectConflictingActionLists(situation);
-  // On the MERGED record, not just on the input: `put` patches, so a change that
-  // drops blocked_actions while leaving the forbidding prose in place never
-  // mentions the prose at all. The record that lands is the one to judge.
-  rejectProseOnlyPolicy(situation as unknown as Record<string, unknown>, opts);
-  // The Situation record and its index entries are ONE batch: all commit or none
-  // do. `update` is an upsert, so create and update are the same write.
-  const ops: BatchMutationOp[] = [
-    {
-      mutationType: "update",
-      schemaHash: schemaHashFor("situation", cfg),
-      keyHash: situation.slug,
-      fields: situationToFields(situation),
-    },
-    ...(layout ? await situationIndexOps(node, cfg, layout, situation) : []),
-  ];
-  await commitOps(node, ops);
-  return { situation, action: existing ? "updated" : "created" };
+  return withRecordWrite(node, async (node) => {
+    // A write that cannot be indexed fails before it writes anything.
+    const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
+    const existing = await fetchSituationRaw(node, cfg, input.slug);
+    const situation = normalizeSituation(input, existing ?? undefined);
+    rejectConflictingActionLists(situation);
+    // On the MERGED record, not just on the input: `put` patches, so a change that
+    // drops blocked_actions while leaving the forbidding prose in place never
+    // mentions the prose at all. The record that lands is the one to judge.
+    rejectProseOnlyPolicy(situation as unknown as Record<string, unknown>, opts);
+    // The Situation record and its index entries are ONE batch: all commit or none
+    // do. `update` is an upsert, so create and update are the same write.
+    const ops: BatchMutationOp[] = [
+      {
+        mutationType: "update",
+        schemaHash: schemaHashFor("situation", cfg),
+        keyHash: situation.slug,
+        fields: situationToFields(situation),
+      },
+      ...(layout ? await situationIndexOps(node, cfg, layout, situation) : []),
+    ];
+    await commitOps(node, ops, true);
+    return { situation, action: existing ? "updated" : "created" };
+  });
 }
 
 export function activeSituations(situations: Situation[], at: Date = new Date()): Situation[] {

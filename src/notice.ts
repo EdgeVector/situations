@@ -1,3 +1,4 @@
+import { withRecordWrite } from "./write-context.ts";
 import { FsituationsError, type BatchMutationOp, type NodeClient, type QueryRow } from "./client.ts";
 import { schemaHashFor, type Config } from "./config.ts";
 import {
@@ -656,7 +657,7 @@ async function listNoticesIndexedLegacy(
  * legacy `recent_notices` blob (it held every non-expired notice of 14 days) get
  * their entries. Idempotent; writes only entries of those notices.
  */
-export async function seedLongLivedNotices(
+export async function considerLegacyLongLivedNotices(
   node: NodeClient,
   cfg: Config,
   layout: Layout,
@@ -668,7 +669,7 @@ export async function seedLongLivedNotices(
     if (raw === null || typeof raw !== "object") continue;
     const notice = normalizeNotice(raw as NoticeInput);
     if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
-    ops.push(putOp(layout, "long", NOTICE_LONG_KEY, longRange(notice), noticeEntryPayload(notice)));
+    ops.push({ ...putOp(layout, "long", NOTICE_LONG_KEY, longRange(notice), noticeEntryPayload(notice)), seedIfAbsent: true });
   }
   await commitOps(node, ops);
   return ops.length;
@@ -730,26 +731,26 @@ export async function upsertNotice(
   cfg: Config,
   input: NoticeInput,
 ): Promise<{ notice: Notice; action: "created" | "updated" }> {
-  const slug =
-    input.slug ??
-    defaultNoticeSlug({ kind: input.kind, title: input.title, at: input.at });
-  // A write that cannot be indexed fails before it writes anything.
-  const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
-  const existing = await findNotice(node, cfg, slug);
-  const notice = normalizeNotice({ ...input, slug }, existing ?? undefined);
-  // The Notice record and its index entry are ONE batch: both commit or neither
-  // does. `update` is an upsert, so create and update are the same write.
-  const ops: BatchMutationOp[] = [
-    {
-      mutationType: "update",
-      schemaHash: schemaHashFor("notice", cfg),
-      keyHash: notice.slug,
-      fields: noticeToFields(notice),
-    },
-    ...(layout ? await noticeIndexOps(node, cfg, layout, notice, existing) : []),
-  ];
-  await commitOps(node, ops);
-  return { notice, action: existing ? "updated" : "created" };
+  const slug = input.slug ?? defaultNoticeSlug({ kind: input.kind, title: input.title, at: input.at });
+  return withRecordWrite(node, async (node) => {
+    // A write that cannot be indexed fails before it writes anything.
+    const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
+    const existing = await findNotice(node, cfg, slug);
+    const notice = normalizeNotice({ ...input, slug }, existing ?? undefined);
+    // The Notice record and its index entry are ONE batch: both commit or neither
+    // does. `update` is an upsert, so create and update are the same write.
+    const ops: BatchMutationOp[] = [
+      {
+        mutationType: "update",
+        schemaHash: schemaHashFor("notice", cfg),
+        keyHash: notice.slug,
+        fields: noticeToFields(notice),
+      },
+      ...(layout ? await noticeIndexOps(node, cfg, layout, notice, existing) : []),
+    ];
+    await commitOps(node, ops, true);
+    return { notice, action: existing ? "updated" : "created" };
+  });
 }
 
 function isNoticeExpired(notice: Notice, at: Date = new Date()): boolean {

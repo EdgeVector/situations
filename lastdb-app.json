@@ -11,7 +11,803 @@
     "runtime": "bun",
     "entrypoint": "src/cli.ts"
   },
-  "schemas": [],
+  "schemas": [
+    {
+      "name": "Situation",
+      "owner_app_id": "situations",
+      "descriptive_name": "Situation",
+      "purpose_statement": "A current operational posture record with scope, phases, links, and agent-facing preflight policy",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "operational_situation_slug",
+        "operational_situation_title",
+        "operational_situation_summary",
+        "operational_situation_status",
+        "operational_situation_severity",
+        "operational_scope_system_names",
+        "operational_scope_repository_names",
+        "operational_scope_routine_names",
+        "operational_scope_automation_ids",
+        "operational_current_phase_id",
+        "operational_phase_list_json",
+        "operational_blocked_action_names",
+        "operational_allowed_action_names",
+        "operational_approval_required_action_names",
+        "operational_preflight_message",
+        "related_work_card_slugs",
+        "related_knowledge_record_slugs",
+        "operational_situation_owner_identifier",
+        "operational_situation_created_at",
+        "operational_situation_updated_at",
+        "operational_situation_expires_at_text"
+      ],
+      "field_types": {
+        "operational_situation_slug": "String",
+        "operational_situation_title": "String",
+        "operational_situation_summary": "String",
+        "operational_situation_status": "String",
+        "operational_situation_severity": "String",
+        "operational_scope_system_names": {
+          "Array": "String"
+        },
+        "operational_scope_repository_names": {
+          "Array": "String"
+        },
+        "operational_scope_routine_names": {
+          "Array": "String"
+        },
+        "operational_scope_automation_ids": {
+          "Array": "String"
+        },
+        "operational_current_phase_id": "String",
+        "operational_phase_list_json": "String",
+        "operational_blocked_action_names": {
+          "Array": "String"
+        },
+        "operational_allowed_action_names": {
+          "Array": "String"
+        },
+        "operational_approval_required_action_names": {
+          "Array": "String"
+        },
+        "operational_preflight_message": "String",
+        "related_work_card_slugs": {
+          "Array": "String"
+        },
+        "related_knowledge_record_slugs": {
+          "Array": "String"
+        },
+        "operational_situation_owner_identifier": "String",
+        "operational_situation_created_at": "DateTime",
+        "operational_situation_updated_at": "DateTime",
+        "operational_situation_expires_at_text": "String"
+      },
+      "field_descriptions": {
+        "operational_situation_slug": "the stable slug of an operational situation",
+        "operational_situation_title": "the one-line title of an operational situation",
+        "operational_situation_summary": "the plain-text summary of the current operational situation",
+        "operational_situation_status": "the active, monitoring, resolved, or archived lifecycle status of an operational situation",
+        "operational_situation_severity": "the p0, p1, p2, or p3 severity of an operational situation",
+        "operational_scope_system_names": "the system names within the scope of an operational situation or notice",
+        "operational_scope_repository_names": "the repository names within the scope of an operational situation",
+        "operational_scope_routine_names": "the routine names within the scope of an operational situation",
+        "operational_scope_automation_ids": "the automation identifiers within the scope of an operational situation",
+        "operational_current_phase_id": "the identifier of the current phase of an operational situation",
+        "operational_phase_list_json": "a JSON-encoded list of operational phases and their scoped action rules",
+        "operational_blocked_action_names": "the action names prohibited by an operational situation",
+        "operational_allowed_action_names": "the action names explicitly allowed by an operational situation",
+        "operational_approval_required_action_names": "the action names that require operator approval under an operational situation",
+        "operational_preflight_message": "the message presented to an agent when an operational preflight rule matches",
+        "related_work_card_slugs": "the work card slugs related to an operational situation or notice",
+        "related_knowledge_record_slugs": "the knowledge record slugs related to an operational situation or notice",
+        "operational_situation_owner_identifier": "the person or agent identifier responsible for an operational situation",
+        "operational_situation_created_at": "the RFC 3339 instant when an operational situation was created",
+        "operational_situation_updated_at": "the RFC 3339 instant when an operational situation was last updated",
+        "operational_situation_expires_at_text": "the RFC 3339 expiration instant as text, or an empty value for an operational situation without expiration"
+      },
+      "field_classifications": {
+        "operational_situation_title": [
+          "word"
+        ],
+        "operational_situation_summary": [
+          "word"
+        ],
+        "operational_preflight_message": [
+          "word"
+        ]
+      },
+      "field_data_classifications": {
+        "operational_situation_slug": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_title": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_summary": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_status": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_severity": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_system_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_repository_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_routine_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_automation_ids": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_current_phase_id": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_phase_list_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_blocked_action_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_allowed_action_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_approval_required_action_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_preflight_message": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "related_work_card_slugs": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "related_knowledge_record_slugs": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_owner_identifier": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_created_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_updated_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_expires_at_text": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "operational_situation_slug": 1,
+        "operational_situation_title": 1,
+        "operational_situation_summary": 1,
+        "operational_situation_status": 1,
+        "operational_situation_severity": 1,
+        "operational_scope_system_names": 1,
+        "operational_scope_repository_names": 1,
+        "operational_scope_routine_names": 1,
+        "operational_scope_automation_ids": 1,
+        "operational_current_phase_id": 1,
+        "operational_phase_list_json": 1,
+        "operational_blocked_action_names": 1,
+        "operational_allowed_action_names": 1,
+        "operational_approval_required_action_names": 1,
+        "operational_preflight_message": 1,
+        "related_work_card_slugs": 1,
+        "related_knowledge_record_slugs": 1,
+        "operational_situation_owner_identifier": 1,
+        "operational_situation_created_at": 1,
+        "operational_situation_updated_at": 1,
+        "operational_situation_expires_at_text": 1
+      }
+    },
+    {
+      "name": "Notice",
+      "owner_app_id": "situations",
+      "descriptive_name": "Notice",
+      "purpose_statement": "A time-stamped non-blocking FYI about an agent-impacting change (upgrade, restart, deploy) so other agents can attribute flapping instead of opening false incidents",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "notice_event_slug",
+        "notice_event_kind",
+        "notice_event_title",
+        "notice_event_summary",
+        "notice_event_occurred_at",
+        "operational_scope_system_names",
+        "operational_scope_app_ids",
+        "notice_actor_identifier",
+        "operational_situation_slug",
+        "notice_severity_hint",
+        "notice_event_expires_at_text",
+        "notice_record_created_at",
+        "related_work_card_slugs",
+        "related_knowledge_record_slugs"
+      ],
+      "field_types": {
+        "notice_event_slug": "String",
+        "notice_event_kind": "String",
+        "notice_event_title": "String",
+        "notice_event_summary": "String",
+        "notice_event_occurred_at": "DateTime",
+        "operational_scope_system_names": {
+          "Array": "String"
+        },
+        "operational_scope_app_ids": {
+          "Array": "String"
+        },
+        "notice_actor_identifier": "String",
+        "operational_situation_slug": "String",
+        "notice_severity_hint": "String",
+        "notice_event_expires_at_text": "String",
+        "notice_record_created_at": "DateTime",
+        "related_work_card_slugs": {
+          "Array": "String"
+        },
+        "related_knowledge_record_slugs": {
+          "Array": "String"
+        }
+      },
+      "field_descriptions": {
+        "notice_event_slug": "the stable slug of an operational notice event",
+        "notice_event_kind": "the upgrade, restart, deploy, config, cutover, or other kind of an operational notice",
+        "notice_event_title": "the one-line title of an operational notice event",
+        "notice_event_summary": "the plain-text summary of an operational notice event",
+        "notice_event_occurred_at": "the RFC 3339 instant when the event in an operational notice occurred",
+        "operational_scope_system_names": "the system names within the scope of an operational situation or notice",
+        "operational_scope_app_ids": "the app identifiers within the scope of an operational notice",
+        "notice_actor_identifier": "the person, agent, or routine identifier responsible for the event in an operational notice",
+        "operational_situation_slug": "the stable slug of an operational situation",
+        "notice_severity_hint": "the info or warn severity hint of an operational notice",
+        "notice_event_expires_at_text": "the RFC 3339 expiration instant as text, or an empty value for a notice without expiration",
+        "notice_record_created_at": "the RFC 3339 instant when an operational notice record was created",
+        "related_work_card_slugs": "the work card slugs related to an operational situation or notice",
+        "related_knowledge_record_slugs": "the knowledge record slugs related to an operational situation or notice"
+      },
+      "field_classifications": {
+        "notice_event_title": [
+          "word"
+        ],
+        "notice_event_summary": [
+          "word"
+        ]
+      },
+      "field_data_classifications": {
+        "notice_event_slug": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_kind": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_title": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_summary": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_occurred_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_system_names": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_scope_app_ids": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_actor_identifier": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_slug": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_severity_hint": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_expires_at_text": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_record_created_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "related_work_card_slugs": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "related_knowledge_record_slugs": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "notice_event_slug": 1,
+        "notice_event_kind": 1,
+        "notice_event_title": 1,
+        "notice_event_summary": 1,
+        "notice_event_occurred_at": 1,
+        "operational_scope_system_names": 1,
+        "operational_scope_app_ids": 1,
+        "notice_actor_identifier": 1,
+        "operational_situation_slug": 1,
+        "notice_severity_hint": 1,
+        "notice_event_expires_at_text": 1,
+        "notice_record_created_at": 1,
+        "related_work_card_slugs": 1,
+        "related_knowledge_record_slugs": 1
+      }
+    },
+    {
+      "name": "Index",
+      "owner_app_id": "situations",
+      "descriptive_name": "Index",
+      "purpose_statement": "Legacy read-only rollup blobs (active situations, notice and situation history by day); superseded by the IndexEntry and NoticeHistory partitions",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "operational_list_bucket_key",
+        "operational_list_payload_json",
+        "operational_list_updated_at"
+      ],
+      "field_types": {
+        "operational_list_bucket_key": "String",
+        "operational_list_payload_json": "String",
+        "operational_list_updated_at": "DateTime"
+      },
+      "field_descriptions": {
+        "operational_list_bucket_key": "the active_situations, all_situations, or recent_notices key of a legacy operational list",
+        "operational_list_payload_json": "the JSON-encoded contents of one legacy operational list",
+        "operational_list_updated_at": "the RFC 3339 instant when a legacy operational list was last updated"
+      },
+      "field_data_classifications": {
+        "operational_list_bucket_key": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_list_payload_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_list_updated_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "operational_list_bucket_key": 1,
+        "operational_list_payload_json": 1,
+        "operational_list_updated_at": 1
+      }
+    },
+    {
+      "name": "IndexEntry",
+      "owner_app_id": "situations",
+      "descriptive_name": "IndexEntry_hashrange_v1",
+      "purpose_statement": "One small index entry per HashRange record (partition x entry key) so the active-situation set and situation history are read with a keyed range query and grown with one small write, never as one rewritten blob",
+      "schema_type": "HashRange",
+      "record_keys": {
+        "primary": {
+          "kind": "hash_range",
+          "range_type": "String"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "operational_list_selector_key",
+        "operational_list_entry_key",
+        "operational_list_entry_json",
+        "operational_list_entry_version"
+      ],
+      "field_types": {
+        "operational_list_selector_key": "String",
+        "operational_list_entry_key": "String",
+        "operational_list_entry_json": "String",
+        "operational_list_entry_version": "String"
+      },
+      "field_descriptions": {
+        "operational_list_selector_key": "the selector for an active situation list, a UTC history day list, or its copy state",
+        "operational_list_entry_key": "the situation or notice slug, UTC day, or reserved copy marker within an operational list",
+        "operational_list_entry_json": "a JSON-encoded operational list entry of at most 4 KiB, including an empty-day marker when needed",
+        "operational_list_entry_version": "the version marker of the operational list entry layout"
+      },
+      "field_classifications": {
+        "operational_list_selector_key": [
+          "no_index",
+          "metadata"
+        ],
+        "operational_list_entry_key": [
+          "no_index",
+          "metadata"
+        ],
+        "operational_list_entry_json": [
+          "no_index",
+          "metadata"
+        ],
+        "operational_list_entry_version": [
+          "no_index",
+          "metadata"
+        ]
+      },
+      "field_data_classifications": {
+        "operational_list_selector_key": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_list_entry_key": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_list_entry_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_list_entry_version": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "operational_list_selector_key": 1,
+        "operational_list_entry_key": 1,
+        "operational_list_entry_json": 1,
+        "operational_list_entry_version": 1
+      }
+    },
+    {
+      "name": "NoticeHistory",
+      "owner_app_id": "situations",
+      "descriptive_name": "NoticeHistory_hashrange_v1",
+      "purpose_statement": "One notice history entry per HashRange record (UTC day partition x creation time and slug) so notice history is read by day and expires by a node TTL, never as one rewritten blob",
+      "schema_type": "HashRange",
+      "record_keys": {
+        "primary": {
+          "kind": "hash_range",
+          "range_type": "String"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "notice_history_day_key",
+        "notice_history_event_order_key",
+        "notice_history_entry_json",
+        "notice_history_entry_version"
+      ],
+      "field_types": {
+        "notice_history_day_key": "String",
+        "notice_history_event_order_key": "String",
+        "notice_history_entry_json": "String",
+        "notice_history_entry_version": "String"
+      },
+      "field_descriptions": {
+        "notice_history_day_key": "the notice_history_day prefix followed by the UTC date of a notice history bucket",
+        "notice_history_event_order_key": "the zero-padded Unix creation time and notice slug joined by # within one notice history day",
+        "notice_history_entry_json": "a JSON-encoded notice history entry of at most 4 KiB",
+        "notice_history_entry_version": "the version marker of the notice history entry layout"
+      },
+      "field_classifications": {
+        "notice_history_day_key": [
+          "no_index",
+          "metadata"
+        ],
+        "notice_history_event_order_key": [
+          "no_index",
+          "metadata"
+        ],
+        "notice_history_entry_json": [
+          "no_index",
+          "metadata"
+        ],
+        "notice_history_entry_version": [
+          "no_index",
+          "metadata"
+        ]
+      },
+      "field_data_classifications": {
+        "notice_history_day_key": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_history_event_order_key": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_history_entry_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_history_entry_version": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "notice_history_day_key": 1,
+        "notice_history_event_order_key": 1,
+        "notice_history_entry_json": 1,
+        "notice_history_entry_version": 1
+      }
+    },
+    {
+      "name": "SituationAdminSnapshot",
+      "owner_app_id": "situations",
+      "descriptive_name": "SituationAdminSnapshot",
+      "purpose_statement": "A slim point-in-time situations posture+notices snapshot safe for admin delivery",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "operational_snapshot_id",
+        "snapshot_captured_at",
+        "operational_posture_count_decimal_text",
+        "notice_event_count_decimal_text",
+        "operational_posture_summary_list_json",
+        "notice_event_summary_list_json",
+        "operational_snapshot_schema_hashes_json"
+      ],
+      "field_types": {
+        "operational_snapshot_id": "String",
+        "snapshot_captured_at": "DateTime",
+        "operational_posture_count_decimal_text": "String",
+        "notice_event_count_decimal_text": "String",
+        "operational_posture_summary_list_json": "String",
+        "notice_event_summary_list_json": "String",
+        "operational_snapshot_schema_hashes_json": "String"
+      },
+      "field_descriptions": {
+        "operational_snapshot_id": "the stable identifier of an operational posture and notice snapshot",
+        "snapshot_captured_at": "the RFC 3339 instant when a metadata snapshot was captured",
+        "operational_posture_count_decimal_text": "the base-10 text encoding of the count of active postures in one snapshot",
+        "notice_event_count_decimal_text": "the base-10 text encoding of the count of notice events in one snapshot",
+        "operational_posture_summary_list_json": "a JSON-encoded list of short active operational posture summaries",
+        "notice_event_summary_list_json": "a JSON-encoded list of short operational notice event summaries",
+        "operational_snapshot_schema_hashes_json": "a JSON-encoded map of the schema identities used by an operational snapshot"
+      },
+      "field_data_classifications": {
+        "operational_snapshot_id": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "snapshot_captured_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_posture_count_decimal_text": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_count_decimal_text": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_posture_summary_list_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_summary_list_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_snapshot_schema_hashes_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "operational_snapshot_id": 1,
+        "snapshot_captured_at": 1,
+        "operational_posture_count_decimal_text": 1,
+        "notice_event_count_decimal_text": 1,
+        "operational_posture_summary_list_json": 1,
+        "notice_event_summary_list_json": 1,
+        "operational_snapshot_schema_hashes_json": 1
+      }
+    },
+    {
+      "name": "SituationAdminPosture",
+      "owner_app_id": "situations",
+      "descriptive_name": "SituationAdminPosture",
+      "purpose_statement": "One privacy-safe active situation posture row for admin delivery",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "operational_situation_slug",
+        "operational_situation_severity",
+        "operational_situation_status",
+        "operational_situation_summary",
+        "operational_blocked_action_list_json",
+        "operational_posture_summary_captured_at"
+      ],
+      "field_types": {
+        "operational_situation_slug": "String",
+        "operational_situation_severity": "String",
+        "operational_situation_status": "String",
+        "operational_situation_summary": "String",
+        "operational_blocked_action_list_json": "String",
+        "operational_posture_summary_captured_at": "DateTime"
+      },
+      "field_descriptions": {
+        "operational_situation_slug": "the stable slug of an operational situation",
+        "operational_situation_severity": "the p0, p1, p2, or p3 severity of an operational situation",
+        "operational_situation_status": "the active, monitoring, resolved, or archived lifecycle status of an operational situation",
+        "operational_situation_summary": "the plain-text summary of the current operational situation",
+        "operational_blocked_action_list_json": "a JSON-encoded list of prohibited action names in a short operational posture summary",
+        "operational_posture_summary_captured_at": "the RFC 3339 instant when a short operational posture summary was captured"
+      },
+      "field_data_classifications": {
+        "operational_situation_slug": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_severity": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_status": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_situation_summary": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_blocked_action_list_json": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "operational_posture_summary_captured_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "operational_situation_slug": 1,
+        "operational_situation_severity": 1,
+        "operational_situation_status": 1,
+        "operational_situation_summary": 1,
+        "operational_blocked_action_list_json": 1,
+        "operational_posture_summary_captured_at": 1
+      }
+    },
+    {
+      "name": "SituationAdminNotice",
+      "owner_app_id": "situations",
+      "descriptive_name": "SituationAdminNotice",
+      "purpose_statement": "One privacy-safe recent agent-impact notice for admin delivery",
+      "schema_type": "Hash",
+      "record_keys": {
+        "primary": {
+          "kind": "hash"
+        },
+        "alternates": {}
+      },
+      "fields": [
+        "notice_event_slug",
+        "notice_event_kind",
+        "notice_event_occurred_at",
+        "notice_event_title",
+        "notice_event_summary",
+        "notice_scope_system_names_csv",
+        "notice_summary_captured_at"
+      ],
+      "field_types": {
+        "notice_event_slug": "String",
+        "notice_event_kind": "String",
+        "notice_event_occurred_at": "DateTime",
+        "notice_event_title": "String",
+        "notice_event_summary": "String",
+        "notice_scope_system_names_csv": "String",
+        "notice_summary_captured_at": "DateTime"
+      },
+      "field_descriptions": {
+        "notice_event_slug": "the stable slug of an operational notice event",
+        "notice_event_kind": "the upgrade, restart, deploy, config, cutover, or other kind of an operational notice",
+        "notice_event_occurred_at": "the RFC 3339 instant when the event in an operational notice occurred",
+        "notice_event_title": "the one-line title of an operational notice event",
+        "notice_event_summary": "the plain-text summary of an operational notice event",
+        "notice_scope_system_names_csv": "the comma-separated system names in a short operational notice summary",
+        "notice_summary_captured_at": "the RFC 3339 instant when a short operational notice summary was captured"
+      },
+      "field_data_classifications": {
+        "notice_event_slug": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_kind": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_occurred_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_title": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_event_summary": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_scope_system_names_csv": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        },
+        "notice_summary_captured_at": {
+          "sensitivity_level": 0,
+          "data_domain": "general"
+        }
+      },
+      "field_versions": {
+        "notice_event_slug": 1,
+        "notice_event_kind": 1,
+        "notice_event_occurred_at": 1,
+        "notice_event_title": 1,
+        "notice_event_summary": 1,
+        "notice_scope_system_names_csv": 1,
+        "notice_summary_captured_at": 1
+      }
+    }
+  ],
   "install": {
     "prepare": [
       {
@@ -44,5 +840,9 @@
     ],
     "post_install": [],
     "requires": []
-  }
+  },
+  "contract_surfaces": [
+    "http"
+  ],
+  "api_version": 30
 }

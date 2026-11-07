@@ -48,7 +48,7 @@ import {
   renderNotice,
   renderNoticesList,
   requireNotice,
-  seedLongLivedNotices,
+  considerLegacyLongLivedNotices,
   upsertNotice,
   type NoticeInput,
 } from "./notice.ts";
@@ -59,7 +59,6 @@ import {
   type DeliveryRecipient,
 } from "./publish-status.ts";
 import { runDoctor } from "./doctor.ts";
-import { OWNER_APP_ID } from "./schemas.ts";
 
 type CaptureSentryException = (error: unknown, tags?: Record<string, string>) => Promise<void>;
 
@@ -262,10 +261,10 @@ Run it after an upgrade, after \`situations init\`.`;
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
 Write a privacy-safe admin deliverable snapshot to the local LastDB Mini socket:
-  - fsituations/SituationAdminSnapshot key posture-latest, and posture-latest/page-0001
+  - situations/SituationAdminSnapshot key posture-latest, and posture-latest/page-0001
     and up when the lists need more than one page (each record stays under 64 KiB)
-  - fsituations/SituationAdminPosture per active/monitoring situation
-  - fsituations/SituationAdminNotice per recent notice (default --since 24h)
+  - situations/SituationAdminPosture per active/monitoring situation
+  - situations/SituationAdminNotice per recent notice (default --since 24h)
 
 Fields are intentionally slim (posture: slug/severity/status/summary/blocked_actions;
 notices: kind/at/title/summary/systems). Full phases_json and preflight bodies are
@@ -507,6 +506,7 @@ async function initCmd(rest: string[]): Promise<number> {
 
   const cfgPath = parsed.values.config ?? defaultConfigPath();
   const previousConfig=existsSync(cfgPath)?readFileSync(cfgPath,"utf8"):null;
+  const existing = readConfigForInit(cfgPath);
   const nodeUrl = parsed.values["node-url"] ?? "http://127.0.0.1";
   const nodeSocketPath = parsed.values["node-socket-path"];
   const userHash = parsed.values["user-hash"] ?? "";
@@ -524,15 +524,12 @@ async function initCmd(rest: string[]): Promise<number> {
     });
   }
 
-  const existing = readConfigForInit(cfgPath);
-  const before = existing ? [] : await probe.listSchemas();
-  const canonicalVocabulary = existing ? Boolean(existing.schemaFieldAliases)
-    : !before.some((schema) => schema.owner_app_id === OWNER_APP_ID && schema.fields.some((field) => ["slug","key","ie_h","nh_h"].includes(field)));
-  const node = newNodeClient({baseUrl:nodeUrl,userHash:identity.userHash,
-    socketPath:resolveSocketPath(nodeSocketPath ? {nodeSocketPath} : undefined),
-    schemaFieldAliases:existing?.schemaFieldAliases,canonicalVocabulary});
+  const node = newNodeClient({
+    baseUrl: nodeUrl, userHash: identity.userHash,
+    socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
+  });
   const resolved = await resolveOrDeclareSchemaHashes(node, {
-    quiet: Boolean(parsed.values.json), canonicalVocabulary,
+    quiet: Boolean(parsed.values.json), expectedIdentities: existing?.schemaIdentities,
   });
   const declared=resolved.schemaHashes;
   const situationHash = declared.situation;
@@ -544,7 +541,7 @@ async function initCmd(rest: string[]): Promise<number> {
   if (!situationHash) {
     throw new FsituationsError({
       code: "schema_not_loaded",
-      message: "No loaded fsituations/Situation schema was found on the node.",
+      message: "No loaded situations/Situation schema was found on the node.",
       hint: "Publish/load the schema from `situations schema --type situation --json`, or pass --schema-hash.",
     });
   }
@@ -566,13 +563,13 @@ async function initCmd(rest: string[]): Promise<number> {
     userHash: identity.userHash,
     schemaHashes,
     schemaIdentities:resolved.schemaIdentities,
-    schemaFieldAliases:canonicalVocabulary ? {...canonicalProfilesForHashes(schemaHashes),...canonicalProfilesForHashes(resolved.schemaIdentities)} : undefined,
+    schemaFieldAliases: canonicalProfilesForHashes(schemaHashes),
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath, previousConfig);
   // One-time: the long-lived notices still live in the legacy `recent_notices`
   // blob get their entries, so the default `notices` list shows them.
-  let seededLongLived = 0;
+  let legacyLongLivedConsidered = 0;
   if (indexEntryHash && noticeHistoryHash) {
     try {
       const seedNode = newNodeClient({
@@ -580,7 +577,7 @@ async function initCmd(rest: string[]): Promise<number> {
         userHash: identity.userHash,
         socketPath: resolveSocketPath(nodeSocketPath ? { nodeSocketPath } : undefined),
       });
-      seededLongLived = await seedLongLivedNotices(seedNode, cfg, {
+      legacyLongLivedConsidered = await considerLegacyLongLivedNotices(seedNode, cfg, {
         entry: indexEntryHash,
         notice: noticeHistoryHash,
       });
@@ -597,7 +594,7 @@ async function initCmd(rest: string[]): Promise<number> {
     indexSchemaHash: indexHash ?? null,
     indexEntrySchemaHash: indexEntryHash ?? null,
     noticeHistorySchemaHash: noticeHistoryHash ?? null,
-    seededLongLivedNotices: seededLongLived,
+    legacyLongLivedNoticesConsidered: legacyLongLivedConsidered,
     userHash: identity.userHash,
   };
   if (parsed.values.json) {

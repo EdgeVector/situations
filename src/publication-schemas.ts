@@ -61,7 +61,7 @@ function schema(
     descriptive_name: name,
     purpose_statement: purpose,
     schema_type: "Hash",
-    key: { hash_field: "slug" },
+    record_keys: { primary: { kind: "hash" }, alternates: {} },
     fields: [...fields],
     field_types: Object.fromEntries(fields.map((field) => [field, "String"])),
     field_descriptions: Object.fromEntries(

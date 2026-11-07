@@ -92,6 +92,8 @@ jobs:
           test "$(git -C candidate rev-parse HEAD)" = "$APP_AFTER"
           test "$(git -C baseline rev-parse HEAD)" = "$APP_BEFORE"
           test "$(git -C lastdb rev-parse HEAD)" = "$NIGHTLY_OID"
+          # Registry declarations use the canonical public HTTPS clone URL.
+          git -C candidate remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
       - name: Install app dependencies
         shell: bash
         run: |

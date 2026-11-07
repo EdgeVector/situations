@@ -56,6 +56,26 @@ def finish_setup(node, output, cleanup):
     save(output / "setup-cleanup.json", cleanup.request_and_wait(node))
 
 
+def prepare_registry_declarations(args, node, output, api):
+    """Validate the actual manifest against the reopened home, without signing or publishing."""
+    manifest = args.candidate / "lastdb-app.json"
+    environment = {key: os.environ[key] for key in ("PATH", "HOME", "LANG") if key in os.environ}
+    for channel in ("next", "stable"):
+        declaration = output / f"registry-{channel}.json"
+        command = [str(args.daemon.with_name("lastdb")), "--data-dir", str(node.home),
+                   "app", "publish", "--manifest", str(manifest), "--env", "dev",
+                   "--channel", channel, "--prepare", str(declaration)]
+        with (output / f"registry-{channel}-prepare.log").open("w") as stream:
+            subprocess.run(command, cwd=args.candidate, env=environment,
+                           stdout=stream, stderr=stream, check=True, timeout=180)
+        payload = json.loads(declaration.read_text())
+        require(payload.get("app_id") == "situations" and payload.get("sha") == args.candidate_revision
+                and payload.get("api_version") == api and payload.get("channel") == channel
+                and payload.get("source") == "https://github.com/EdgeVector/situations.git"
+                and "publisher_key" not in payload and "publisher_sig" not in payload,
+                "The prepared registry declaration does not bind this exact app and API")
+
+
 def nightly_node(Node, expected_version):
     """The lastdb helper Node, for a prebuilt nightly daemon (the same shared fix as brain).
 
@@ -93,6 +113,8 @@ def arm(args, Node, cleanup, label, pair):
         binary, revision, output, temporary_directory=Path(os.environ["RUNNER_TEMP"]).resolve(),
                 environment={"LASTDB_SELF_METRICS_TO_DB": "false",
                     "LASTDB_BYTE_BACKUP_V2_ENABLED": "false", "LASTDB_TTL_SWEEP": "0"})
+    # Use the product CLI's normal socket path inside this CI-owned home.
+    node.socket = node.home / "data" / "folddb.sock"
     try:
         node.start()
         # The home marker exists after the first start. Record the format the nightly writes.
@@ -120,6 +142,9 @@ def arm(args, Node, cleanup, label, pair):
                 "The product run did not confirm its complete membership")
         require(json.loads((output / "final-reopen.json").read_text()).get("complete") is True,
                 "The final flush/reopen did not prove the complete app values")
+        if label == "candidate" and pair == 0:
+            prepare_registry_declarations(args, node, output, api)
+            result["registry_declarations_prepared"] = True
         result["pair"] = pair
         result["api_version"] = api
         result["daemon_revision"] = revision
@@ -153,6 +178,7 @@ def render(args, arms):
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
              "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",
+             "The candidate manifest also passed the product CLI's unsigned next and stable registry preparation. The workflow does not publish.",
              "The legacy summary schema is empty because the current product no longer writes it.",
              "Cloud sync stays OFF. The workflow does not invoke the Situations CLI or alter app identity gates.",
              "Times cover the complete exported app operation and accepted-write accounting. They exclude the verifier and process startup.", "",

@@ -105,6 +105,9 @@ async function client(root: string, cfg?: Config): Promise<NodeClient> {
     userHash: cfg?.userHash ?? "",
     socketPath: args.socket,
     schemaFieldAliases: cfg?.schemaFieldAliases,
+    schemaIdentitiesByAddress: cfg?.schemaIdentities && Object.fromEntries(
+      Object.entries(cfg.schemaIdentities).map(([key, identity]) => [cfg.schemaHashes[key], identity]),
+    ),
     canonicalVocabulary: true,
     timeoutMs: 120000,
   });
@@ -159,6 +162,7 @@ async function setup(
   const resolved = await definitions.resolveOrDeclareSchemaHashes(node, {
     quiet: true,
     canonicalVocabulary: true,
+    expectedIdentities: prior?.schemaIdentities,
   });
   const hashes = resolved.schemaHashes ?? resolved;
   const config = await load(root, "config");
@@ -426,11 +430,13 @@ async function runMeasure(): Promise<void> {
     read("seed-values.json"),
   ), "Reopen changed values or record metadata.");
   const beforeCfg = stable(cfg.schemaHashes);
+  const beforeIdentities = stable(cfg.schemaIdentities);
   if (args.label !== "baseline") {
     const repeated = await setup(active, cfg);
     cfg = repeated.cfg;
     node = repeated.node;
     require(stable(cfg.schemaHashes) === beforeCfg &&
+      stable(cfg.schemaIdentities) === beforeIdentities &&
       same(
         await snapshot(node, cfg),
         read("seed-values.json"),
@@ -449,6 +455,7 @@ async function runMeasure(): Promise<void> {
       owned.length === 8 &&
       APP_SCHEMAS.every(({ key, definition }) => owned.some((schema: any) =>
         schema.name === cfg.schemaHashes[key] &&
+        schema.identity_hash === cfg.schemaIdentities?.[key] &&
         schema.record_keys?.primary?.kind === (definition.schema_type === "HashRange" ? "hash_range" : "hash") &&
         same(schema.record_keys?.alternates, {}),
       )), "The app does not own exactly the eight expected native record types.");

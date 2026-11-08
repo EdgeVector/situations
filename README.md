@@ -5,10 +5,10 @@ situations, phase/set breakdowns, scope, links, agent-facing preflight
 policy, and a **non-blocking notice feed** for agent-impacting changes
 (upgrades, restarts, cutovers).
 
-It fills the gap between F-Brain and F-Kanban:
+It fills the gap between brain and kanban:
 
-- F-Brain stores durable rationale and decisions.
-- F-Kanban stores work items.
+- Brain stores durable rationale and decisions.
+- Kanban stores work items.
 - **Situations (posture)** store current shared reality agents must respect
   before mutating shared systems.
 - **Notices** are time-stamped FYIs so agents can attribute flapping
@@ -70,8 +70,8 @@ On `preflight` it projects the blocking situations (their fields plus
 `reason`, `action`, `message`) and prints nothing when the action is allowed:
 
 ```bash
-situations show forge-ci-containment --field slug,current_phase
-situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
+situations show <slug> --field slug,current_phase
+situations preflight --action enable-ci --repo EdgeVector/lastdb --field slug,reason
 ```
 
 `--json` (full machine-readable output) remains available when you need the
@@ -124,17 +124,14 @@ retry spam); not every PR merge.
 
 ## Install
 
-Install the user PATH shim from this checkout:
-
 ```bash
 bun run install-shim
 ```
 
-The installer refreshes the durable host-track checkout
-`~/.host-track/situations` from `http://localhost:3300/EdgeVector/situations.git` and creates
-`~/.local/bin/situations` by default. It also installs the `fsituations`
-compatibility alias during the migration. Set `SITUATIONS_INSTALL_BIN` or
-`FSITUATIONS_INSTALL_BIN` to choose another directory.
+By default that runs `lastdb app upgrade situations`. Set
+`SITUATIONS_INSTALL_DIRECT=1` to link `bin/situations` and the `fsituations`
+alias from this checkout instead. `SITUATIONS_INSTALL_BIN` or
+`FSITUATIONS_INSTALL_BIN` chooses the directory for that direct link.
 
 To inspect the current install:
 
@@ -143,21 +140,8 @@ situations which --json
 situations which --check
 ```
 
-`which --check` exits nonzero when the running checkout is not under
-`~/.host-track/situations`.
-
-For direct legacy linking from the current checkout, set
-`SITUATIONS_INSTALL_DIRECT=1` before running the installer.
-
-If the shim is not installed but this checkout is available, use the fallback:
-
-```bash
-bun --cwd /Users/tomtang/code/edgevector/situations src/cli.ts list --json
-```
-
-The old checkout path `/Users/tomtang/code/edgevector/fsituations` remains a
-compatibility symlink until the fleet reference sweep lands, so older agent
-fallback commands continue to run.
+`which --check` exits nonzero when the executable does not resolve under
+`~/.local/share/lastdb-apps/situations`.
 
 If Situations is not initialized, agents may continue read-only local
 inspection, but must not mutate shared systems until the Situation check
@@ -168,7 +152,7 @@ merge settings, and production/shared infrastructure changes.
 Before a shared-system mutation, run a scoped preflight:
 
 ```bash
-situations preflight --action enable-ci --repo EdgeVector/fold
+situations preflight --action enable-ci --repo EdgeVector/lastdb
 ```
 
 If preflight blocks the action or requires human clearance, stop and cite the
@@ -196,12 +180,12 @@ bun run src/cli.ts schema
 bun run src/cli.ts init     # once for a native home: declares and pins all seven schemas
 bun run src/cli.ts doctor   # read only: schemas and unreadable entries
 # optional pin: bun run src/cli.ts init --schema-hash <canonical-hash> --notice-schema-hash <hash>
-bun run src/cli.ts put examples/forge-ci-containment.json
+bun run src/cli.ts put <json-file>
 bun run src/cli.ts list
 bun run src/cli.ts list --field slug,status,severity
 bun run src/cli.ts notice --title "…" --kind upgrade --system lastdbd
 bun run src/cli.ts notices --since 30m
-bun run src/cli.ts preflight --action enable-ci --repo EdgeVector/fold
+bun run src/cli.ts preflight --action enable-ci --repo EdgeVector/lastdb
 bun run src/cli.ts publish-status --json
 bun run src/cli.ts deliver-status --dry-run --json
 ```

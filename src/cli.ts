@@ -98,11 +98,11 @@ context, not policy. Situation preflight is unchanged.
 
 Examples:
   situations schema
-  situations put examples/forge-ci-containment.json
+  situations put <json-file>
   situations list --field slug,status,severity
   situations notice --title "LastDB upgraded to 0.22.8" --kind upgrade --system lastdbd
   situations notices --since 30m
-  situations preflight --action enable-ci --repo EdgeVector/fold
+  situations preflight --action enable-ci --repo EdgeVector/lastdb
 
 Compatibility: the fsituations command remains an alias.`;
 
@@ -171,7 +171,7 @@ Options:
                        current_phase, scope_repos (arrays join with ,).
 
 Example:
-  situations show forge-ci-containment --field slug,current_phase`;
+  situations show <slug> --field slug,current_phase`;
     case "preflight":
       return `situations preflight --action <action> [scope]
 
@@ -189,8 +189,8 @@ Scope options:
                       Prefer this over \`--json | python -c ...\`.
 
 Examples:
-  situations preflight --action enable-ci --repo EdgeVector/fold --field slug,reason
-  situations preflight --action enable-ci --repo EdgeVector/fold --json`;
+  situations preflight --action enable-ci --repo EdgeVector/lastdb --field slug,reason
+  situations preflight --action enable-ci --repo EdgeVector/lastdb --json`;
     case "notice":
       return `situations notice — post a non-blocking agent-impact FYI
 
@@ -738,7 +738,7 @@ async function preflightCmd(rest: string[]): Promise<number> {
     throw new FsituationsError({
       code: "missing_action",
       message: "Missing --action.",
-      hint: "Example: situations preflight --action enable-ci --repo EdgeVector/fold",
+      hint: "Example: situations preflight --action enable-ci --repo EdgeVector/lastdb",
     });
   }
   // Fail closed: preflight gates the fleet. A read or match that throws must

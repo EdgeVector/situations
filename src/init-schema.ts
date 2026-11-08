@@ -1,12 +1,11 @@
 import { APP_SCHEMAS } from "./schema-layout.ts";
-import { nodeOwnsValues, object, requireOwnedHome } from "./schema-mode.ts";
+import { object, requireOwnedHome } from "./schema-mode.ts";
 import { profilesFor } from "./canonical-vocabulary.ts";
 import type { FieldAliasProfiles } from "./field-alias-transport.ts";
 import { FsituationsError, type NodeClient } from "./client.ts";
 import {
   OWNER_APP_ID,
   indexEntrySchema,
-  indexSchema,
   noticeHistorySchema,
   situationSchema,
   type AddSchemaRequest,
@@ -22,7 +21,7 @@ const TARGETS: SchemaTarget[] = APP_SCHEMAS.map(({ key, definition }) => ({
   schema: { schema: definition, mutation_mappers: {} },
 }));
 
-/** Explicit setup checks the whole app before it declares eight owned schemas. */
+/** Explicit setup checks the whole app before it declares seven owned schemas. */
 export async function resolveOrDeclareSchemaHashes(
   node: NodeClient,
   opts: {
@@ -34,26 +33,8 @@ export async function resolveOrDeclareSchemaHashes(
   schemaHashes: Record<string, string>;
   schemaIdentities: Record<string, string>;
 }> {
-  const [loaded, version] = await Promise.all([
-    node.listSchemas(),
-    node.rawCall("GET", "/api/version"),
-  ]);
-  if (version.status !== 200)
-    throw new Error(
-      "The selected node did not confirm its schema capabilities.",
-    );
-  requireOwnedHome({ ready: true, schemas: loaded }, version.body);
-  const targets = new Map(TARGETS.map(({ schema }) => [schema.schema.descriptive_name, schema.schema]));
-  for (const installed of loaded) {
-    const target = targets.get(installed.descriptive_name);
-    if (installed.owner_app_id === "fsituations" || (installed.owner_app_id === OWNER_APP_ID && target &&
-        (installed.name !== `${OWNER_APP_ID}/${target.name}` || !matchesKeys(installed.record_keys, target.record_keys)))) {
-      throw new FsituationsError({
-        code: "legacy_schema_conversion_required",
-        message: "The selected node has legacy Situations schemas. Convert their records explicitly before registering the native definitions.",
-      });
-    }
-  }
+  const loaded = await node.listSchemas();
+  requireOwnedHome({ ready: true, schemas: loaded });
   // Preview the whole application before any declaration, including existing
   // field definitions, key layouts, and any identity pins from a saved config.
   const previews = await Promise.all(TARGETS.map(({ schema }) =>
@@ -70,7 +51,7 @@ export async function resolveOrDeclareSchemaHashes(
   })) {
     throw new FsituationsError({
       code: "native_schema_identity_mismatch",
-      message: "A Situations definition differs from the existing node or config. Convert or resolve it explicitly before setup.",
+      message: "A Situations definition differs from the existing node or config. Resolve the difference before setup.",
     });
   }
   const declarations = await Promise.all(TARGETS.map(({ schema }) =>
@@ -121,14 +102,11 @@ function matchesKeys(value: unknown, expected: AddSchemaRequest["schema"]["recor
 export async function resolveLoadedLayoutHashes(
   node: NodeClient,
 ): Promise<{
-  index: string | null;
   index_entry: string | null;
   notice_history: string | null;
 }> {
   const loaded = await listOwnedSchemas(node);
   return {
-    // The legacy Index schema: loaded when any schema of ours carries its name.
-    index: pickLoadedHash(loaded, { key: "index", schema: indexSchema }),
     index_entry: pickLoadedHash(loaded, {
       key: "index_entry",
       schema: indexEntrySchema,
@@ -155,14 +133,8 @@ async function resolveLoadedHash(
 
 type LoadedSchemas = Awaited<ReturnType<NodeClient["listSchemas"]>>;
 
-// A reader or writer uses a loaded schema only on a node that owns the values
-// of every schema. An older node lists nothing here, the same as before setup.
 async function listOwnedSchemas(node: NodeClient): Promise<LoadedSchemas> {
-  const [loaded, version] = await Promise.all([
-    node.listSchemas(),
-    node.rawCall("GET", "/api/version"),
-  ]);
-  return version.status === 200 && nodeOwnsValues(version.body) ? loaded : [];
+  return node.listSchemas();
 }
 
 function pickLoadedHash(

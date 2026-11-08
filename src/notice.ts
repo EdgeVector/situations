@@ -19,9 +19,6 @@ import {
   entryExists,
   FAR_FUTURE_SECONDS,
   hydrateBySlug,
-  legacyList,
-  mapLimit,
-  migrationOpsForWrite,
   normalizeHistoryDays,
   noticeRange,
   padSeconds,
@@ -29,13 +26,10 @@ import {
   readPartitions,
   requireAll,
   requireLayout,
-  resolveLayout,
   unreadable,
-  type Entry,
   type Layout,
   type PartitionSpec,
 } from "./index-entry.ts";
-import { hasIndexSchema, readIndexPayload, requireIndexSchema } from "./index-cache.ts";
 
 const NOTICE_HISTORY_DAYS_KEY = "notice_history_days";
 // Notices the default list would miss by day (see `isLongLived`): one small entry
@@ -45,9 +39,6 @@ const NOTICE_LONG_KEY = "notice_long_expiry";
 const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const CLOCK_SLACK_MS = 60_000;
 const NOTICE_HISTORY_DAY_PREFIX = "notice_history_day:";
-// LEGACY keys, read only (a node that has not loaded the entry schemas yet).
-const RECENT_NOTICES_LEGACY_KEY = "recent_notices";
-const LEGACY_RECENT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 // The default list covers today and yesterday (UTC): the default expiry is 24 h
 // from `at`, so a notice that is still live has an `at` in one of those days.
 const DEFAULT_LIST_DAYS = 2;
@@ -372,29 +363,11 @@ function coerceNoticeEntry(stored: unknown, id: string): NoticeEntryPayload {
   };
 }
 
-/**
- * One notice day. `legacyKnown` is false for a day the days marker says never
- * had a legacy bucket: it then has nothing to re-check.
- */
-function noticeDaySpec(day: string, legacyKnown = true): PartitionSpec<NoticeEntryPayload> {
-  const key = noticeHistoryDayKey(day);
+/** One notice day. */
+function noticeDaySpec(day: string): PartitionSpec<NoticeEntryPayload> {
   return {
     store: "notice",
-    hash: key,
-    legacyKey: legacyKnown ? key : null,
-    checkDrift: false,
-    // A log a TTL may empty: a listed id with no entry is an expired one, and
-    // reading the blob again would bring it back. Notices never gate anything.
-    fillMissing: false,
-    fromLegacy(legacy) {
-      return legacyList(legacy, key).map((raw) => {
-        if (raw === null || typeof raw !== "object") {
-          throw unreadable(`legacy Index row "${key}"`, "an item is not a notice");
-        }
-        const notice = normalizeNotice(raw as NoticeInput);
-        return { id: notice.slug, range: noticeEntryRange(notice), payload: noticeEntryPayload(notice) };
-      });
-    },
+    hash: noticeHistoryDayKey(day),
     coerce: coerceNoticeEntry,
   };
 }
@@ -426,11 +399,7 @@ function longLivedSpec(nowMs: number): PartitionSpec<NoticeEntryPayload> {
   return {
     store: "long",
     hash: NOTICE_LONG_KEY,
-    legacyKey: null,
-    checkDrift: false,
-    fillMissing: false,
     range: { start: padSeconds(nowMs / 1000), end: "99999999999999999999~" },
-    fromLegacy: () => [],
     coerce: coerceNoticeEntry,
   };
 }
@@ -465,30 +434,6 @@ function entryMayMatch(slug: string, entry: NoticeEntryPayload, options: History
   return filterNotices([probe], scoped).length > 0;
 }
 
-/** The pre-entry read of the same history, for a node that has not loaded the entry schemas yet. */
-async function listNoticesHistoryLegacy(
-  node: NodeClient,
-  cfg: Config,
-  options: HistoryOptions,
-): Promise<Notice[]> {
-  const days = normalizeHistoryDays(
-    legacyList(await readIndexPayload<unknown>(node, cfg, NOTICE_HISTORY_DAYS_KEY), NOTICE_HISTORY_DAYS_KEY),
-  );
-  const floorMs = options.since ? Date.now() - parseSinceDuration(options.since) : null;
-  const wanted = floorMs === null ? days : days.filter((day) => dayCouldContainSince(day, floorMs));
-  const buckets = await mapLimit(wanted, 4, (day) =>
-    readIndexPayload<Notice[]>(node, cfg, noticeHistoryDayKey(day)),
-  );
-  const bySlug = new Map<string, Notice>();
-  for (const bucket of buckets) {
-    for (const raw of bucket ?? []) {
-      const notice = normalizeNotice(raw);
-      bySlug.set(notice.slug, notice);
-    }
-  }
-  return filterNotices([...bySlug.values()], options).sort(compareNotices);
-}
-
 /** Every UTC day from `fromMs` to `toMs`, newest first. */
 function daysBetween(fromMs: number, toMs: number): string[] {
   const days: string[] = [];
@@ -517,12 +462,11 @@ async function listNoticeDays(
   cfg: Config,
   layout: Layout,
   days: readonly string[],
-  legacyDays: Set<string> | null,
   options: HistoryOptions,
   withLongLived = false,
 ): Promise<Notice[]> {
-  const specs = days.map((day) => noticeDaySpec(day, legacyDays === null || legacyDays.has(day)));
-  const states = await readPartitions<NoticeEntryPayload>(node, cfg, layout, [
+  const specs = days.map((day) => noticeDaySpec(day));
+  const states = await readPartitions<NoticeEntryPayload>(node, layout, [
     ...specs,
     ...(withLongLived ? [longLivedSpec(Date.now())] : []),
   ]);
@@ -535,7 +479,7 @@ async function listNoticeDays(
     for (const entry of state.entries) {
       copies.set(entry.id, (copies.get(entry.id) ?? 0) + 1);
       if (entryMayMatch(entry.id, entry.payload, options)) {
-        wanted.set(entry.id, entry.fromLegacy ? undefined : entry.payload.notice);
+        wanted.set(entry.id, entry.payload.notice);
       }
     }
   }
@@ -579,29 +523,26 @@ async function listNoticesHistoryIndexed(
   // A short window names its days by arithmetic: the days list grows by one
   // entry a day for ever and is not worth a read for "the last 2 hours".
   if (floorMs !== null && nowMs - floorMs <= SHORT_WINDOW_MS) {
-    return listNoticeDays(node, cfg, layout, daysBetween(floorMs, nowMs), null, options);
+    return listNoticeDays(node, cfg, layout, daysBetween(floorMs, nowMs), options);
   }
-  const [daysState] = await readPartitions(node, cfg, layout, [NOTICE_DAYS_SPEC]);
+  const [daysState] = await readPartitions(node, layout, [NOTICE_DAYS_SPEC]);
   const days = normalizeHistoryDays(daysState!.entries.map((entry) => entry.id));
   const wantedDays =
     floorMs === null ? days : days.filter((day) => dayCouldContainSince(day, floorMs));
-  return listNoticeDays(node, cfg, layout, wantedDays, daysState!.info.markerIds, options);
+  return listNoticeDays(node, cfg, layout, wantedDays, options);
 }
 
 /**
- * Full notice history through the keyed day partitions. Pre-index configs fail
- * closed with a re-init hint rather than scanning Notice. With no options it is
- * every notice, expired ones included; `since` reads only the days that can
- * hold a notice in the window.
+ * Full notice history through the keyed day partitions. A missing entry layout
+ * fails closed. With no options it is every notice, expired ones included;
+ * `since` reads only the days that can hold a notice in the window.
  */
 export async function listNotices(
   node: NodeClient,
   cfg: Config,
   options: HistoryOptions = { all: true },
 ): Promise<Notice[]> {
-  requireIndexSchema(cfg);
-  const layout = await resolveLayout(node, cfg);
-  if (!layout) return listNoticesHistoryLegacy(node, cfg, options);
+  const layout = await requireLayout(node, cfg);
   return listNoticesHistoryIndexed(node, cfg, layout, options);
 }
 
@@ -616,72 +557,16 @@ export async function listNotices(
  *                     from `at`, so every other live notice has an `at` in those
  *                     two days.
  *
- * There is no cached "recent" row any more: such a row was one field value rewritten by
- * every writer, two writers lost a notice from it for good, and it had to be
- * capped. A day partition already carries the notice.
- *
- * A node that has not loaded the entry schemas yet (before `situations init`)
- * answers from the old blobs, read only.
+ * A day partition carries the notice.
  */
 export async function listNoticesIndexed(
   node: NodeClient,
   cfg: Config,
   opts: HistoryOptions = {},
 ): Promise<Notice[]> {
-  const layout = await resolveLayout(node, cfg);
-  if (!layout) return listNoticesIndexedLegacy(node, cfg, opts);
-  requireIndexSchema(cfg);
+  const layout = await requireLayout(node, cfg);
   if (opts.all || opts.since) return listNoticesHistoryIndexed(node, cfg, layout, opts);
-  return listNoticeDays(node, cfg, layout, defaultListDays(Date.now()), null, opts, true);
-}
-
-/** The old default read, for a node without the entry schemas: the `recent_notices` blob, read only. */
-async function listNoticesIndexedLegacy(
-  node: NodeClient,
-  cfg: Config,
-  opts: HistoryOptions,
-): Promise<Notice[]> {
-  if (opts.all) return listNoticesHistoryLegacy(node, cfg, opts);
-  if (opts.since && parseSinceDuration(opts.since) > LEGACY_RECENT_RETENTION_MS) {
-    requireIndexSchema(cfg);
-    return listNoticesHistoryLegacy(node, cfg, opts);
-  }
-  const cached = await readIndexPayload<Notice[]>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
-  if (cached !== null) return legacyList(cached, RECENT_NOTICES_LEGACY_KEY).map((n) => normalizeNotice(n as NoticeInput)).sort(compareNotices);
-  requireIndexSchema(cfg);
-  return [];
-}
-
-/**
- * One-time step of `situations init`: the long-lived notices still live in the
- * legacy `recent_notices` blob (it held every non-expired notice of 14 days) get
- * their entries. Idempotent; writes only entries of those notices.
- */
-export async function seedLongLivedNotices(
-  node: NodeClient,
-  cfg: Config,
-  layout: Layout,
-): Promise<number> {
-  return withRecordWrite(node, async (node) => {
-    const blob = await readIndexPayload<unknown>(node, cfg, RECENT_NOTICES_LEGACY_KEY);
-    const now = new Date();
-    const candidates = new Map<string, BatchMutationOp>();
-    for (const raw of legacyList(blob, RECENT_NOTICES_LEGACY_KEY)) {
-      if (raw === null || typeof raw !== "object") continue;
-      const notice = normalizeNotice(raw as NoticeInput);
-      if (isNoticeExpired(notice, now) || !isLongLived(notice, noticeCreatedMs(notice))) continue;
-      const range = longRange(notice);
-      candidates.set(range, putOp(layout, "long", NOTICE_LONG_KEY, range, noticeEntryPayload(notice)));
-    }
-    if (!candidates.size) return 0;
-    const existing = await node.queryAll({ schemaHash: layout.entry, fields: [], filter: { HashKey: NOTICE_LONG_KEY } });
-    for (const { key } of existing.results) {
-      if (key.range !== null) candidates.delete(key.range);
-    }
-    const ops = [...candidates.values()];
-    await commitOps(node, ops);
-    return ops.length;
-  });
+  return listNoticeDays(node, cfg, layout, defaultListDays(Date.now()), opts, true);
 }
 
 /**
@@ -703,7 +588,6 @@ async function noticeIndexOps(
   const dayOps = async (): Promise<BatchMutationOp[]> => {
     if (!day) return [];
     return [
-      ...(await migrationOpsForWrite(node, cfg, layout, noticeDaySpec(day))),
       putOp(layout, "notice", noticeHistoryDayKey(day), noticeEntryRange(notice), noticeEntryPayload(notice)),
     ];
   };
@@ -711,10 +595,7 @@ async function noticeIndexOps(
     if (!day) return [];
     // A day already listed needs nothing; a new day is listed once.
     if (await entryExists(node, layout, "entry", NOTICE_HISTORY_DAYS_KEY, day)) return [];
-    return [
-      ...(await migrationOpsForWrite(node, cfg, layout, NOTICE_DAYS_SPEC)),
-      putOp(layout, "entry", NOTICE_HISTORY_DAYS_KEY, day, ""),
-    ];
+    return [putOp(layout, "entry", NOTICE_HISTORY_DAYS_KEY, day, "")];
   };
   const [inDay, inDays] = await Promise.all([dayOps(), daysOps()]);
 
@@ -743,7 +624,7 @@ export async function upsertNotice(
   const slug = input.slug ?? defaultNoticeSlug({ kind: input.kind, title: input.title, at: input.at });
   return withRecordWrite(node, async (node) => {
     // A write that cannot be indexed fails before it writes anything.
-    const layout = hasIndexSchema(cfg) ? await requireLayout(node, cfg) : null;
+    const layout = await requireLayout(node, cfg);
     const existing = await findNotice(node, cfg, slug);
     const notice = normalizeNotice({ ...input, slug }, existing ?? undefined);
     // The Notice record and its index entry are ONE batch: both commit or neither
@@ -755,7 +636,7 @@ export async function upsertNotice(
         keyHash: notice.slug,
         fields: noticeToFields(notice),
       },
-      ...(layout ? await noticeIndexOps(node, cfg, layout, notice, existing) : []),
+      ...(await noticeIndexOps(node, cfg, layout, notice, existing)),
     ];
     await commitOps(node, ops, true);
     return { notice, action: existing ? "updated" : "created" };

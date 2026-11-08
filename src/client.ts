@@ -200,10 +200,9 @@ export function newNodeClient(opts: {
 
   let schemaReadiness: Promise<void> | undefined;
   const requireOwnedSetup = (): Promise<void> => schemaReadiness ??= (async () => {
-    const [directory,version]=await Promise.all([callJson("GET","/api/schemas"),callJson("GET","/api/version")]);
+    const directory = await callJson("GET", "/api/schemas");
     if (directory.status!==200) throw mapNodeError(directory.status,directory.body,"/api/schemas");
-    if (version.status!==200) throw mapNodeError(version.status,version.body,"/api/version");
-    requireOwnedHome(directory.body,version.body);
+    requireOwnedHome(directory.body);
   })();
 
   let boundSchemas: Promise<void> | undefined;

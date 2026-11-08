@@ -2,7 +2,6 @@
 import {
   situationSchema,
   noticeSchema,
-  indexSchema,
   indexEntrySchema,
   noticeHistorySchema,
   type SchemaDefinition,
@@ -20,7 +19,6 @@ export const APP_SCHEMAS: ReadonlyArray<{
     definition: situationSchema.schema,
   },
   { key: "notice", member: "created_at", definition: noticeSchema.schema },
-  { key: "index", member: "payload_json", definition: indexSchema.schema },
   {
     key: "index_entry",
     member: "ie_payload",

@@ -1,4 +1,4 @@
-name: F-Situations schema values and latency
+name: Situations schema values and latency
 on:
   pull_request:
     branches: [main]
@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          native='(.schemas | length == 8 and all(.[]; (.record_keys | type) == "object"))'
+          native='(.schemas | length == 7 and all(.[]; (.record_keys | type) == "object"))'
           jq -e "$native" candidate/lastdb-app.json > /dev/null
           tag="$(gh release list -R EdgeVector/lastdb --exclude-drafts --limit 30 \
             --json tagName,publishedAt --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.publishedAt) | last | .tagName')"
@@ -77,10 +77,6 @@ jobs:
             printf 'Nightly %s (source %s), Linux tarball SHA-256 %s.\n\n' "$selected" "$oid" "$sum" >> "$GITHUB_STEP_SUMMARY"
           }
           fetch "$tag" "" "$RUNNER_TEMP/lastdb-nightly"
-          if ! jq -e "$native" baseline/lastdb-app.json > /dev/null; then
-            # The pre-port app uses the old wire. Keep a real before arm while crossing that boundary.
-            fetch nightly-20261104-4b76c7c90 before_ "$RUNNER_TEMP/lastdb-before"
-          fi
       # The lastdb helper scripts (scripts/benchmarks, scripts/disk_v2) at the
       # nightly source, so the helper and the daemon stay in step.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -114,10 +110,6 @@ jobs:
           NIGHTLY_OID: ${{ steps.nightly.outputs.oid }}
           NIGHTLY_VERSION: ${{ steps.nightly.outputs.version }}
           NIGHTLY_SHA256: ${{ steps.nightly.outputs.sha256 }}
-          BEFORE_LASTDBD: ${{ steps.nightly.outputs.before_lastdbd || steps.nightly.outputs.lastdbd }}
-          BEFORE_OID: ${{ steps.nightly.outputs.before_oid || steps.nightly.outputs.oid }}
-          BEFORE_VERSION: ${{ steps.nightly.outputs.before_version || steps.nightly.outputs.version }}
-          BEFORE_SHA256: ${{ steps.nightly.outputs.before_sha256 || steps.nightly.outputs.sha256 }}
           VERIFY_REGISTRY: ${{ inputs.verify_registry || 'none' }}
         run: |
           python3 candidate/scripts/schema-values-latency.py \
@@ -126,8 +118,6 @@ jobs:
             --worker "$GITHUB_WORKSPACE/candidate/scripts/schema-values-workload.ts" \
             --daemon "$LASTDBD" --daemon-revision "$NIGHTLY_OID" --daemon-version "$NIGHTLY_VERSION" \
             --daemon-archive-sha256 "$NIGHTLY_SHA256" \
-            --before-daemon "$BEFORE_LASTDBD" --before-daemon-revision "$BEFORE_OID" \
-            --before-daemon-version "$BEFORE_VERSION" --before-daemon-archive-sha256 "$BEFORE_SHA256" \
             --lastdb-source "$GITHUB_WORKSPACE/lastdb" --records 64 \
             --verify-registry "$VERIFY_REGISTRY" \
             --output "$RUNNER_TEMP/situations-results"

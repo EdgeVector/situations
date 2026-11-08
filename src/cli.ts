@@ -49,7 +49,6 @@ import {
   renderNotice,
   renderNoticesList,
   requireNotice,
-  seedLongLivedNotices,
   upsertNotice,
   type NoticeInput,
 } from "./notice.ts";
@@ -72,9 +71,9 @@ Usage:
   situations <command> [options]
 
 Commands:
-  init                 declare eight owned schemas and save their runtime addresses
-  schema               print the exact definitions for the eight app record types
-  doctor               check the index layout: schemas, legacy copy, drift, unreadable entries (read only)
+  init                 declare seven owned schemas and save their runtime addresses
+  schema               print the exact definitions for the seven app record types
+  doctor               check the index layout: schemas and unreadable entries (read only)
   put <json-file|- >   create/update a situation from JSON
   list                 list active/current situations (--all, --json, --field)
   show <slug>          show one situation (--json, --field)
@@ -105,7 +104,7 @@ Examples:
   situations notices --since 30m
   situations preflight --action enable-ci --repo EdgeVector/fold
 
-Compatibility: fsituations remains an alias during the migration.`;
+Compatibility: the fsituations command remains an alias.`;
 
 export function usageFor(command: string): string {
   switch (command) {
@@ -121,9 +120,8 @@ Options:
   --notice-schema-hash <hash>  assert the canonical Notice definition identity
   --config <path>              write config path
 
-Setup requires LastDB API 30 or later. It checks and declares eight native
-schemas, then saves their definition identities and runtime addresses.
-Existing legacy configs or schemas require an explicit data conversion.`;
+Setup requires LastDB API 30 or later. It checks and declares seven native
+schemas, then saves their definition identities and runtime addresses.`;
     case "put":
       return `situations put <json-file|-> [--allow-global-scope] [--allow-prose-only-policy]
 
@@ -244,7 +242,7 @@ Examples:
   situations notices --since 30m --system lastdbd
   situations notices --field slug,at,kind,title`;
     case "schema":
-      return `situations schema [--type situation|notice|index|index_entry|notice_history|all] [--json]
+      return `situations schema [--type situation|notice|index_entry|notice_history|all] [--json]
 
 Print the schema payload(s) for publishing/loading. Default is all.`;
     case "doctor":
@@ -253,10 +251,9 @@ Print the schema payload(s) for publishing/loading. Default is all.`;
 Read-only checks of the index layout. Exits 1 when a check fails.
   - IndexEntry and NoticeHistory: loaded on the node, pinned in the config
   - each gate partition (active_situations, situation_history_days,
-    notice_history_days): copied from its legacy blob? did an older binary write
-    the legacy blob after the copy (drift)? can every entry be read?
+    notice_history_days): can every entry be read?
 
-Run it after an upgrade, after \`situations init\`.`;
+Run it after \`situations init\`.`;
     case "publish-status":
       return `situations publish-status [--json] [--dry-run] [--since <dur>] [--notice-limit <n>]
 
@@ -536,7 +533,7 @@ async function initCmd(rest: string[]): Promise<number> {
       notice: parsed.values["notice-schema-hash"],
     },
   });
-  const { situation, notice, index, index_entry, notice_history } = schemaHashes;
+  const { situation, notice, index_entry, notice_history } = schemaHashes;
   const cfg: Config = {
     configVersion: CONFIG_VERSION,
     nodeUrl,
@@ -548,28 +545,13 @@ async function initCmd(rest: string[]): Promise<number> {
     ...(nodeSocketPath ? { nodeSocketPath } : {}),
   };
   writeConfig(cfg, cfgPath, previousConfig);
-  // One-time: the long-lived notices still live in the legacy `recent_notices`
-  // blob get their entries, so the default `notices` list shows them.
-  let seededLongLivedNotices = 0;
-  try {
-    seededLongLivedNotices = await seedLongLivedNotices(node, cfg, {
-      entry: index_entry!,
-      notice: notice_history!,
-    });
-  } catch (err) {
-    console.error(
-      `warning: could not seed the long-lived notices from the legacy blob: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
   if (parsed.values.json) {
     console.log(JSON.stringify({
       config: cfgPath,
       schemaHash: situation,
       noticeSchemaHash: notice,
-      indexSchemaHash: index,
       indexEntrySchemaHash: index_entry,
       noticeHistorySchemaHash: notice_history,
-      seededLongLivedNotices,
       userHash: identity.userHash,
     }, null, 2));
   } else {

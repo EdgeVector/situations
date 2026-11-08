@@ -37,33 +37,6 @@
         "data_domain": "general"
       }
     },
-    "operational_list_bucket_key": {
-      "description": "the active_situations, all_situations, or recent_notices key of a legacy operational list",
-      "field_type": "String",
-      "version": 1,
-      "classification": {
-        "sensitivity_level": 0,
-        "data_domain": "general"
-      }
-    },
-    "operational_list_payload_json": {
-      "description": "the JSON-encoded contents of one legacy operational list",
-      "field_type": "String",
-      "version": 1,
-      "classification": {
-        "sensitivity_level": 0,
-        "data_domain": "general"
-      }
-    },
-    "operational_list_updated_at": {
-      "description": "the RFC 3339 instant when a legacy operational list was last updated",
-      "field_type": "DateTime",
-      "version": 1,
-      "classification": {
-        "sensitivity_level": 0,
-        "data_domain": "general"
-      }
-    },
     "notice_history_day_key": {
       "description": "the notice_history_day prefix followed by the UTC date of a notice history bucket",
       "field_type": "String",
@@ -505,11 +478,6 @@
       "ie_r": "operational_list_entry_key",
       "ie_payload": "operational_list_entry_json",
       "ie_marker": "operational_list_entry_version"
-    },
-    "Index": {
-      "key": "operational_list_bucket_key",
-      "payload_json": "operational_list_payload_json",
-      "updated_at": "operational_list_updated_at"
     },
     "NoticeHistory_hashrange_v1": {
       "nh_h": "notice_history_day_key",

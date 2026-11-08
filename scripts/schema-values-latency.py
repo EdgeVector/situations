@@ -13,7 +13,6 @@ import sys
 OPERATIONS = ("point_read", "update", "notice_read", "active_list", "publication")
 # LastDB refuses a record above its record cap.
 RECORD_CAP_BYTES = 64 * 1024
-LEGACY_SOURCE = "4b76c7c900707b964c90054363ee1a8452600f10"
 NATIVE_API = 30
 
 
@@ -177,18 +176,14 @@ def verify_registry(args, Node):
 def arm(args, Node, cleanup, label, pair):
     output = args.output / f"pair-{pair}-{label}"
     output.mkdir(mode=0o700)
-    prefix = "before_daemon" if label == "baseline" else "daemon"
-    node, revision, expected_version = owned_node(args, Node, output, prefix)
+    node, revision, expected_version = owned_node(args, Node, output, "daemon")
     try:
         node.start()
         # The home marker exists after the first start. Record the format the nightly writes.
         save(output / "home-format.json", {"format": node.home_format()})
         version = node.call("/api/version")[0]
         api = (version.get("data") or version).get("api_version", 0)
-        if label == "baseline" and revision == LEGACY_SOURCE:
-            require(api == 26 and node.home_format() == 11, "The legacy baseline identity differs")
-        else:
-            require(api >= NATIVE_API, "A native app arm lacks the complete-record API")
+        require(api >= NATIVE_API, "A native app arm lacks the complete-record API")
         cloud_off(node, output, "start")
         product(args, node, output, label, "setup", api)
         finish_setup(node, output, cleanup)
@@ -231,19 +226,16 @@ def render(args, arms):
     ]
     pages = sorted({str(item.get("snapshot_pages")) for item in arms})
     largest = max(item.get("snapshot_page_max_field_bytes", 0) for item in arms)
-    lines = ["## F-Situations schema ownership and latency", "",
+    lines = ["## Situations schema ownership and latency", "",
              f"App: `{args.baseline_revision}` → `{args.candidate_revision}`.",
              *daemon_lines,
-             ("This migration comparison changes both app and daemon. Do not attribute the timing change to the app alone."
-              if args.before_daemon_revision != args.daemon_revision
-              else "Both arms use the same daemon. Each declared schema owns its values."),
+             "Both arms use the same daemon. Each declared schema owns its values.",
              f"Admin snapshot: {', '.join(pages)} page records per publication. The largest page holds {largest:,} field value bytes."
              f" LastDB refuses a record above {RECORD_CAP_BYTES:,} bytes.",
              f"Each arm seeds {args.records} situations and {args.records} notices through actual exported app functions.",
              "Two AB/BA pairs each retain 64 samples per operation. Each arm starts on its own fresh home.",
              "The proof checks accepted app-written keys, full values, record metadata, range membership, repeated setup, and flush/reopen.",
              "The candidate manifest also passed the product CLI's unsigned next and stable registry preparation. The workflow does not publish.",
-             "The legacy summary schema is empty because the current product no longer writes it.",
              "Cloud sync stays OFF. The workflow does not invoke the Situations CLI or alter app identity gates.",
              "Times cover the complete exported app operation and accepted-write accounting. They exclude the verifier and process startup.", "",
              "| Operation | Before P50 ms | After P50 ms | Before P95 ms | After P95 ms | P95 change |",
@@ -266,11 +258,10 @@ def render(args, arms):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("baseline", "candidate", "worker", "daemon", "before-daemon", "lastdb-source", "output"):
+    for name in ("baseline", "candidate", "worker", "daemon", "lastdb-source", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("baseline-revision", "candidate-revision", "daemon-revision", "daemon-version",
-                 "daemon-archive-sha256", "before-daemon-revision", "before-daemon-version",
-                 "before-daemon-archive-sha256"):
+                 "daemon-archive-sha256"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--records", type=int, default=64)
     parser.add_argument("--verify-registry", choices=("none", "next", "stable"), default="none")
@@ -284,15 +275,12 @@ def main():
                 and os.environ.get("GITHUB_SHA") == args.candidate_revision,
                 "Signed verification is a manual operation on the exact main source only")
     require(all(re.fullmatch(r"[a-f0-9]{40}", getattr(args, name)) for name in
-                ("baseline_revision", "candidate_revision", "daemon_revision", "before_daemon_revision")),
+                ("baseline_revision", "candidate_revision", "daemon_revision")),
             "Exact source revisions are required")
-    require(args.before_daemon_revision in (args.daemon_revision, LEGACY_SOURCE),
-            "The before daemon is neither the current release nor the exact legacy baseline")
-    for prefix in ("daemon", "before_daemon"):
-        revision, version, digest = (getattr(args, prefix + suffix)
-                                     for suffix in ("_revision", "_version", "_archive_sha256"))
-        require(f".g{revision[:9]}" in version, "The nightly build version does not name its source")
-        require(re.fullmatch(r"[a-f0-9]{64}", digest), "The verified archive checksum is required")
+    revision, version, digest = (getattr(args, "daemon" + suffix)
+                                 for suffix in ("_revision", "_version", "_archive_sha256"))
+    require(f".g{revision[:9]}" in version, "The nightly build version does not name its source")
+    require(re.fullmatch(r"[a-f0-9]{64}", digest), "The verified archive checksum is required")
     for path, revision in ((args.baseline, args.baseline_revision), (args.candidate, args.candidate_revision),
                            (args.lastdb_source, args.daemon_revision)):
         require(subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip() == revision,
@@ -302,9 +290,7 @@ def main():
     args.output.mkdir(mode=0o700)
     (args.output / "revisions.txt").write_text(
         f"App before: {args.baseline_revision}\nApp after: {args.candidate_revision}\n"
-        f"Daemon before: {args.before_daemon_version}, source {args.before_daemon_revision}, "
-        f"archive SHA-256 {args.before_daemon_archive_sha256}\n"
-        f"Daemon after: {args.daemon_version}, source {args.daemon_revision}, "
+        f"Daemon: {args.daemon_version}, source {args.daemon_revision}, "
         f"archive SHA-256 {args.daemon_archive_sha256}\n"
     )
     sys.path.insert(0, str(args.lastdb_source / "scripts/benchmarks"))
@@ -312,7 +298,7 @@ def main():
     from node import Node, file_hash
     import cleanup
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
-              "binary_sha256": {"daemon": file_hash(args.daemon), "before_daemon": file_hash(args.before_daemon),
+              "binary_sha256": {"daemon": file_hash(args.daemon),
                                 "cli": file_hash(args.daemon.with_name("lastdb"))},
               "arms": []}
     try:

@@ -47,9 +47,6 @@ jobs:
           done
           echo "all needed jobs succeeded"
 
-  # Push to main only. Builds the compiled dist/* binaries on a macOS runner
-  # (bun --compile output is platform specific) and uploads ht-artifact-<sha>.
-  # app registry refresh pulls it on the Mac. Brain: design-github-artifact-publish-path
   registry-commit:
     name: Registry commit identity
     needs: [ci-required]

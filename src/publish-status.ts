@@ -446,7 +446,7 @@ function defaultLastDbDeliveryClient(
 
 function newLastDbJsonCaller(opts: { socketPath?: string; nodeUrl?: string; userHash?: string } = {}) {
   const socketPath = opts.socketPath ?? resolveSocketPath();
-  const nodeUrl = (opts.nodeUrl ?? process.env.SITUATIONS_LASTDB_NODE_URL ?? "http://localhost:9001").replace(
+  const nodeUrl = (opts.nodeUrl ?? process.env.SITUATIONS_LASTDB_NODE_URL ?? "http://127.0.0.1").replace(
     /\/+$/,
     "",
   );

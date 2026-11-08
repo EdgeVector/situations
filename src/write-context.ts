@@ -20,7 +20,7 @@ function observedPreimage(op: BatchMutationOp, observations: Observation[]): Que
 
 /**
  * Retain the actual record or absence that produced each edit, including
- * index and marker edits. Retry the whole calculation only after a definite
+ * index edits. Retry the whole calculation only after a definite
  * revision conflict, and never after any preceding batch was accepted.
  */
 export async function withRecordWrite<T>(node: NodeClient, run: (scoped: NodeClient) => Promise<T>): Promise<T> {

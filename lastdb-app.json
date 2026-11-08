@@ -384,53 +384,6 @@
       }
     },
     {
-      "name": "Index",
-      "owner_app_id": "situations",
-      "descriptive_name": "Index",
-      "purpose_statement": "Legacy read-only rollup blobs (active situations, notice and situation history by day); superseded by the IndexEntry and NoticeHistory partitions",
-      "schema_type": "Hash",
-      "record_keys": {
-        "primary": {
-          "kind": "hash"
-        },
-        "alternates": {}
-      },
-      "fields": [
-        "operational_list_bucket_key",
-        "operational_list_payload_json",
-        "operational_list_updated_at"
-      ],
-      "field_types": {
-        "operational_list_bucket_key": "String",
-        "operational_list_payload_json": "String",
-        "operational_list_updated_at": "DateTime"
-      },
-      "field_descriptions": {
-        "operational_list_bucket_key": "the active_situations, all_situations, or recent_notices key of a legacy operational list",
-        "operational_list_payload_json": "the JSON-encoded contents of one legacy operational list",
-        "operational_list_updated_at": "the RFC 3339 instant when a legacy operational list was last updated"
-      },
-      "field_data_classifications": {
-        "operational_list_bucket_key": {
-          "sensitivity_level": 0,
-          "data_domain": "general"
-        },
-        "operational_list_payload_json": {
-          "sensitivity_level": 0,
-          "data_domain": "general"
-        },
-        "operational_list_updated_at": {
-          "sensitivity_level": 0,
-          "data_domain": "general"
-        }
-      },
-      "field_versions": {
-        "operational_list_bucket_key": 1,
-        "operational_list_payload_json": 1,
-        "operational_list_updated_at": 1
-      }
-    },
-    {
       "name": "IndexEntry",
       "owner_app_id": "situations",
       "descriptive_name": "IndexEntry_hashrange_v1",

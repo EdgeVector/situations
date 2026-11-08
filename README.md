@@ -193,8 +193,8 @@ OBS_SENTRY_RELEASE=situations@0.1.0   # optional; defaults to package version
 
 ```bash
 bun run src/cli.ts schema
-bun run src/cli.ts init     # once for a native home: declares and pins all eight schemas
-bun run src/cli.ts doctor   # read only: schemas, legacy copy, drift, unreadable entries
+bun run src/cli.ts init     # once for a native home: declares and pins all seven schemas
+bun run src/cli.ts doctor   # read only: schemas and unreadable entries
 # optional pin: bun run src/cli.ts init --schema-hash <canonical-hash> --notice-schema-hash <hash>
 bun run src/cli.ts put examples/forge-ci-containment.json
 bun run src/cli.ts list
@@ -275,8 +275,8 @@ consumer private key lives in the admin SPA / consumer tooling (sibling card
 
 ## Schema
 
-The app owns eight separate record types. The types include the situation, notice,
-summary, membership, history, and three privacy-safe publication schemas. Print the definitions:
+The app owns seven separate record types: situation, notice, index entry,
+notice history, and three privacy-safe publication schemas. Print the definitions:
 
 ```bash
 bun run src/cli.ts schema --type all
@@ -284,17 +284,13 @@ bun run src/cli.ts schema --type notice
 ```
 
 Setup requires LastDB API 30 or later. The app and its registry manifest
-declare the same eight schemas under the `situations` namespace. Each schema
+declare the same seven schemas under the `situations` namespace. Each schema
 declares its primary key separately from its record fields. Setup checks all
 definitions before declaring them and reads them back before saving their
 runtime addresses and definition identities. The optional `--schema-hash`
 and `--notice-schema-hash` flags assert identities before any declaration.
 
-Existing `fsituations` schemas and legacy configs require an explicit data
-conversion. Setup leaves them in place. The `fsituations` command and config
-path aliases still work with a native config.
-
-Canonical field reuse shares definitions only. The eight record types keep
+Canonical field reuse shares definitions only. The seven record types keep
 their own values. The publication records contain summaries; they do not use
 alternate keys on the full source records. A publication request uses the saved
 owned schemas and one batch for each bounded set of writes.
@@ -306,13 +302,8 @@ causes the app to read the record again and recalculate its index changes.
 ### Index layout (a list that grows is one record per entry)
 
 A LastDB node refuses one field value above its ceiling (256 KiB by default;
-HTTP 413 `field_value_too_large`). A list that grows is therefore never one field. The old `fsituations/Index`
-schema kept every list as one JSON blob and its blobs measured 66 to 161 KB and
-grew 40 KB in a day: each notice rewrote a whole blob. Now:
+HTTP 413 `field_value_too_large`). A list that grows is therefore never one field.
 
-- `situations/Index` (Hash) is LEGACY and READ ONLY. Nothing writes it. Each
-  blob is read to seed the partitions below and is never rewritten or deleted.
-  `recent_notices` is read only by a node that has not run `situations init` yet.
 - `situations/IndexEntry` (HashRange): one record
   of at most 4 KiB per entry. No TTL.
 - `situations/NoticeHistory` (HashRange): the
@@ -320,7 +311,7 @@ grew 40 KB in a day: each notice rewrote a whole blob. Now:
 
 | Schema | Partition (hash) | Entry key (range) | Entry holds |
 |---|---|---|---|
-| `IndexEntry` | `active_situations` | situation slug | `status`, `severity`, `updated_at`, `expires_at`, and the situation when it fits; `src: legacy` on a copy from an old blob |
+| `IndexEntry` | `active_situations` | situation slug | `status`, `severity`, `updated_at`, `expires_at`, and the situation when it fits |
 | `IndexEntry` | `situation_history_day:<YYYY-MM-DD>` | situation slug | `created_at` |
 | `IndexEntry` | `situation_history_days` | `YYYY-MM-DD` | nothing |
 | `IndexEntry` | `notice_history_days` | `YYYY-MM-DD` | nothing |
@@ -345,19 +336,15 @@ own clock.
 1. Different slugs never conflict: each has its own record and its own entry.
 2. The same slug is written by `put` as one batch, so one device wins both the
    record and the entry.
-3. An entry copied from an old blob is UNTRUSTED: liveness comes from the
-   RECORD, so a stale copy written later than a newer entry cannot change an
-   answer. Both devices migrating at once, or a marker that syncs before its
-   entries, fall back to the blob and the record, and are safe for that reason.
-4. A reader never writes a trusted entry, and never deletes one.
+3. A reader never writes an entry, and never deletes one.
 
 **Preflight fails closed.** An entry that cannot be parsed, or that points at no
 record, stops `preflight` with exit 3 (and `list --all`, `notices`) instead of
 being skipped; the message names the command that removes it
 (`echo '{"slug":"X","title":"X","status":"resolved"}' | situations put -`). A
-node that has not loaded the legacy `Index` schema, or a failed read, is an error
-and never an empty list; a node with the schema loaded and no row is a valid
-empty answer (the legacy blob is read twice before "no row" is believed).
+node that has not loaded IndexEntry and NoticeHistory is an error
+(`index_layout_missing`) and never an empty list. A loaded layout with no
+entries is a valid empty answer.
 
 #### Default notices list
 
@@ -375,7 +362,6 @@ A notice with a custom expiry over 24 h (revenant-watch uses 168 h), a future
 `at`, or no expiry would be missed by the day read. Each also gets a small entry
 in `notice_long_expiry`, keyed by when it expires, that the default read
 includes (an ordered range read of the entries that have not expired yet).
-`situations init` seeds it once from the legacy `recent_notices` blob.
 
 #### TTL-ready shape (PROPOSED; this code sets no policy)
 
@@ -385,103 +371,18 @@ key: a key in any other form never expires. So `NoticeHistory` uses
 changes, so an update rewrites one key; the slug is the text after the first
 `#`). A negative or non-finite time THROWS instead of clamping to 0 (a TTL would
 delete that entry at once). The hash is a UTC DAY slice, never an hour slice: the
-node's registry of hash partitions never shrinks. Migration marker keys use year
-2286 so a TTL never reaches them. `IndexEntry` (active set, situation history,
+node's registry of hash partitions never shrinks. `IndexEntry` (active set, situation history,
 the day lists, `notice_long_expiry`) is not a log and gets no TTL; the day lists
 grow by one tiny record a day.
-
-After a TTL the marker of a notice day still lists the ids it copied. A notice
-day does not read the legacy blob for a listed id with no entry (that entry is an
-expired one; reading the blob would bring it back), so `notices --all` never
-fails on it.
 
 Proposed policy: `Notice` 90 days. The manifest TTL step is built separately. A policy has no
 backfill, must exist before the first write, and must name BOTH installed names
 of the schema (`situations/NoticeHistory` and its canonical hash). Entries
 written before a policy exists will never expire.
 
-#### Migration from the old blobs (per partition, nothing deleted, no scan)
-
-A reader or writer that finds a partition not yet copied reads that partition's
-legacy blob and copies its entries in with ONE batch that ends with marker
-records `__migrated__.<k>`: `{ migrated_at, chunk, of, ids }`: the `updated_at`
-of the blob that was read (not the local clock, so a later write by an older
-binary is always newer, and clock skew cannot hide it) and the ids (slugs or days)
-it contained. Rules:
-
-1. A marker is written only after a legacy row with at least one entry was
-   really copied. A partition with no legacy row is never marked, because a
-   missed read looks exactly like no row; it re-checks the legacy row on each
-   read (one point read, asked twice before a reader believes "no row").
-2. A copy writes ONLY the ids that are absent, and never rewrites an entry. For
-   `active_situations` the copy is UNTRUSTED (`src: legacy`, no copy of the
-   record): a stale process can write it with a LATER write time than a newer
-   entry, so a reader decides liveness from the RECORD (it probes `status` and
-   `expires_at`, 2 fields, and reads the record in full only when it is live). A
-   situation the new binary `put`s again gets a trusted entry again. A reader
-   never promotes an entry itself: a promotion written from an older read of the
-   record could overwrite a newer entry (last writer wins).
-3. A reader trusts a marker only for the ids it lists, and only when every chunk
-   is present. A listed id with no entry (a device synced the marker before the
-   entries) is asked for twice, then served from the legacy blob and read from its
-   record; a listed id whose record is gone is gone, not an error. A `put` that
-   resolves a situation also drops it from the marker, so this costs nothing
-   afterwards.
-4. For a gate partition (`active_situations` and the two day lists), a legacy
-   `updated_at` newer than the marker's `migrated_at` means an older binary wrote
-   the blob after the copy ("drift"). Absent ids are copied (untrusted); a stored
-   entry the blob has a newer version of is decided from the record and drift
-   stays visible (stderr warning, `situations doctor` FAIL) until it is put again.
-5. The legacy rows stay on the node for ever.
-
-#### Upgrade and rollout
-
-CAUTION: the host-track entry for `situations` (last-stack,
-`config/host-track/apps.json`) has `soak_hours: 1` and probes `--help` and `list`.
-A new build goes live after the soak, and both probes pass on a node that has not
-run `situations init`; but `put` and `notice` fail until `situations init` has run.
-So the last-stack host-track change below (a `post_install` that runs
-`situations init`, and a `doctor` probe) must land BEFORE this change is
-installed. It is not part of this repo.
-
-Required order (the schemas must be declared while the old binary is current,
-because a `put` or `notice` never declares and fails until they are):
-
-1. Refresh the candidate (`app-safe-upgrade situations`, never a hand flip of
-   `~/.local/bin`).
-2. Run the CANDIDATE's `situations init` while the old binary is still current
-   (it declares and pins `IndexEntry` and `NoticeHistory` and seeds the
-   long-lived notices; harmless to the old binary). A node started from a release
-   build with no `EXEMEM_ENV` uses the PROD Schema Service; a proof node must set
-   `EXEMEM_ENV=dev`.
-3. Activate.
-4. Run `situations list`, then `situations doctor` (read only; exits 1 on a
-   failed check), then `command -v situations`.
-
-Before `init`, `situations preflight` and the list reads keep using the legacy
-blobs (and fail closed if the node does not have the Index schema), and
-`put`/`notice` fail at once, before any write, with
-`situations init has not been run on this node ... run situations init`. A
-config that cannot be written (a read-only home) works: with no pin the schemas
-the node has loaded are used.
-
-The host-track entry for `situations` lives in last-stack
-(`config/host-track/apps.json`), not here. It needs: `post_install` set to a small
-script that runs the candidate's `init`
-(`"$HOST_TRACK_INSTALL_ROOT/versions/$HOST_TRACK_MANIFEST_DIGEST/dist/situations" init`),
-`safe_upgrade.post_install_phase: "before-probe"`, and a third probe
-`["dist/situations","doctor"]` (the existing probes are `--help` and `list`, which
-pass before `init`).
-
-Rollout hazard: an OLD binary writes only the legacy blob and the new preflight
-reads the entries (drift is read from the records, see rule 4); the NEW `put`
-stops writing the blob, so an old preflight misses situations put by the new
-binary. No other reader exists (last-stack, routines, fkanban, loom, brain and
-lastdb were searched). Flip once and do not run both.
-
 ## Standard canonical vocabulary
 
-`src/canonical-fields.json` defines 53 standard concepts for the five operational schemas and three status publication schemas.
+`src/canonical-fields.json` defines 50 standard concepts for the four operational schemas and three status publication schemas.
 Publication uses their exact names, descriptions, types, and versions.
 The command interface keeps its local names.
 Exact-schema maps translate projections, mutations, batches, and schema metadata.
@@ -491,6 +392,4 @@ Record values, keys, cursors, and JSON payloads remain intact.
 Fresh-home init submits canonical definitions through normal schema declarations.
 The schema service checks names, definitions, types, and concept reuse for every caller.
 No special vocabulary key or operator approval path exists.
-Existing configs without field maps retain legacy definitions and data identities.
-Init does not migrate those values.
 Full timestamps use `DateTime`; optional expiration dates and decimal counts keep explicit text definitions.

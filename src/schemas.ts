@@ -208,39 +208,6 @@ export const noticeSchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-const INDEX_FIELDS = ["key", "payload_json", "updated_at"] as const;
-
-/**
- * LEGACY, read-only. This schema held every list of this app as one JSON blob
- * per key (`active_situations`, `recent_notices`, `notice_history_day:<day>`,
- * `situation_history_day:<day>`, `notice_history_days`,
- * `situation_history_days`). Those blobs measured
- * 66 to 161 KB and grew 40 KB in a day, past the node's field value ceiling, and every
- * notice rewrote a whole blob. Nothing writes this schema any more. Each blob is
- * read once to seed `IndexEntry` / `NoticeHistory`, never rewritten, never
- * deleted. The schema stays declared because that read needs it.
- */
-export const indexSchema: AddSchemaRequest = {
-  schema: {
-    name: "Index",
-    owner_app_id: OWNER_APP_ID,
-    descriptive_name: "Index",
-    purpose_statement:
-      "Legacy read-only rollup blobs (active situations, notice and situation history by day); superseded by the IndexEntry and NoticeHistory partitions",
-    schema_type: "Hash",
-    record_keys: { primary: { kind: "hash" }, alternates: {} },
-    fields: [...INDEX_FIELDS],
-    field_types: fieldTypes(INDEX_FIELDS, []),
-    field_descriptions: {
-      key: "legacy index name; every key is read-only",
-      payload_json: "legacy JSON blob for this key; read once to seed the entry partitions",
-      updated_at: "RFC 3339 timestamp of the last legacy write; a value newer than a partition marker's migrated_at means an old binary wrote after the migration",
-    },
-    field_data_classifications: generalClassifications(INDEX_FIELDS),
-  },
-  mutation_mappers: {},
-};
-
 /**
  * One index entry per HashRange record: (`ie_h` partition) x (`ie_r` entry key).
  * A partition is a list that grows. A partition is read with ONE range query
@@ -253,9 +220,6 @@ export const indexSchema: AddSchemaRequest = {
  *   situation_history_days              YYYY-MM-DD      empty
  *   notice_history_days                 YYYY-MM-DD      empty
  * (The notices themselves are in `NoticeHistory`, the TTL-ready schema.)
- *
- * Every partition seeded from a legacy blob also holds marker records, entry
- * keys `__migrated__.<k>`: see `INDEX_ENTRY_MIGRATED_PREFIX`.
  *
  * Field names stay opaque (`ie_*`), as in brain's `*_hashrange_v1` schemas:
  * Schema Service field-unifies semantic names (slug, title, status, ...) into an
@@ -272,21 +236,6 @@ export const indexSchema: AddSchemaRequest = {
 export const INDEX_ENTRY_MARKER = "situations_index_entry_v1";
 export const NOTICE_HISTORY_MARKER = "situations_notice_history_v1";
 export const INDEX_ENTRY_MAX_BYTES = 4 * 1024;
-/**
- * A migration marker is one or more records, entry keys `__migrated__.0`,
- * `__migrated__.1`, ... Each carries `{ migrated_at, chunk, of, ids }`: the
- * `updated_at` of the legacy blob that was copied (the blob version READ, not the
- * local clock, so a later write by an older binary is always newer), which chunk
- * this is of how many, and the ids (slugs or days) the copy contained. A slug is `[a-z0-9][a-z0-9_-]*` and a day is
- * `YYYY-MM-DD`, so neither collides with the prefix.
- *
- * A reader trusts a marker only for the ids it lists, and only when every chunk
- * is present. A listed id with no entry yet (a device synced the marker before
- * the entries) is read from the legacy blob and its record. A marker is written
- * only after a legacy row with at least one entry was really copied: an empty
- * partition is never marked, because a missed read looks the same as no row.
- */
-export const INDEX_ENTRY_MIGRATED_PREFIX = "__migrated__.";
 const INDEX_ENTRY_FIELDS = ["ie_h", "ie_r", "ie_payload", "ie_marker"] as const;
 
 export const indexEntrySchema: AddSchemaRequest = {
@@ -335,9 +284,6 @@ export const indexEntrySchema: AddSchemaRequest = {
  * (`situations/NoticeHistory` and its canonical hash). Entries written before a
  * policy exists will never expire.
  *
- * The migration marker keys of a partition are `<far-future seconds>#__migrated__.<k>`
- * (year 2286), so a TTL never expires a marker.
- *
  * Opaque `nh_*` names, for the same reason as `ie_*`.
  */
 const NOTICE_HISTORY_FIELDS = ["nh_h", "nh_r", "nh_payload", "nh_marker"] as const;
@@ -370,12 +316,11 @@ export const noticeHistorySchema: AddSchemaRequest = {
   mutation_mappers: {},
 };
 
-export type RecordType = "situation" | "notice" | "index" | "index_entry" | "notice_history";
+export type RecordType = "situation" | "notice" | "index_entry" | "notice_history";
 
 export function fieldsFor(type: RecordType): string[] {
   if (type === "situation") return [...SITUATION_FIELDS];
   if (type === "notice") return [...NOTICE_FIELDS];
-  if (type === "index") return [...INDEX_FIELDS];
   if (type === "index_entry") return [...INDEX_ENTRY_FIELDS];
   if (type === "notice_history") return [...NOTICE_HISTORY_FIELDS];
   throw new Error(`Unknown record type: ${type}`);

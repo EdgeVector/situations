@@ -2,8 +2,7 @@ import { FsituationsError } from "./client.ts";
 
 export type FieldProjectionSource = Record<string, unknown>;
 
-// Mirrors fbrain's read-CLI `--field` projection (EdgeVector/fbrain
-// src/field-projection.ts). Agents check Situations at routine startup, then
+// Agents check Situations at routine startup, then
 // reformat `--json` in python/node to pull one field — which trips the
 // inline-JSON-parse safety hook. `--field slug,status` prints those fields as
 // plain TSV so no JSON parsing is needed downstream.

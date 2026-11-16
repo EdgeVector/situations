@@ -294,8 +294,9 @@ def main():
         f"archive SHA-256 {args.daemon_archive_sha256}\n"
     )
     sys.path.insert(0, str(args.lastdb_source / "scripts/benchmarks"))
-    sys.path.append(str(args.lastdb_source / "scripts/disk_v2"))
     from node import Node, file_hash
+    # Local client. Lastdb no longer ships scripts/disk_v2/cleanup.py.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     import cleanup
     result = {"complete": False, "sources": {name: str(value) for name, value in vars(args).items()},
               "binary_sha256": {"daemon": file_hash(args.daemon),

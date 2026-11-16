@@ -77,8 +77,8 @@ jobs:
             printf 'Nightly %s (source %s), Linux tarball SHA-256 %s.\n\n' "$selected" "$oid" "$sum" >> "$GITHUB_STEP_SUMMARY"
           }
           fetch "$tag" "" "$RUNNER_TEMP/lastdb-nightly"
-      # The lastdb helper scripts (scripts/benchmarks, scripts/disk_v2) at the
-      # nightly source, so the helper and the daemon stay in step.
+      # The lastdb Node helper (scripts/benchmarks) at the nightly source, so
+      # the helper and the daemon stay in step. Cleanup is candidate/scripts/cleanup.py.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: EdgeVector/lastdb

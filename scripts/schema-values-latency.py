@@ -26,10 +26,14 @@ def save(path, value):
 
 
 def cloud_off(node, output, phase):
-    status = node.call("/api/sync/byte-backup-v2", {"action": "status"})[0]
-    require(all(status.get(name) is False for name in ("enabled", "automatic_backup_enabled", "running")),
+    # Lastdb #1586 removed /api/sync/byte-backup-v2. GET /api/status reports the
+    # live tracker: no saved connection, no accepted capture log, nothing syncing.
+    status = node.call("/api/status")[0]["status"]["cloud_sync"]
+    require(status.get("connected") is False and status.get("captures_accepted") is False
+            and status.get("payment_hold") is False and status.get("last_error") is None
+            and status.get("databases") == {},
             "The generated node did not confirm that cloud sync stays OFF")
-    require(status.get("manual_connection") is None, "The generated node has a cloud connection")
+    require(status.get("environment") is None, "The generated node has a cloud connection")
     save(output / f"cloud-off-{phase}.json", status)
 
 

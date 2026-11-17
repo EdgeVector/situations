@@ -22,8 +22,12 @@ export type BatchMutationOp = {
 };
 
 export class RecordConflict extends Error {
-  constructor() {
-    super("The records changed during the operation. Read them again before retrying.");
+  constructor(detail?: string) {
+    super(
+      detail
+        ? `The records changed during the operation. Read them again before retrying. ${detail}`
+        : "The records changed during the operation. Read them again before retrying.",
+    );
     this.name = "RecordConflict";
   }
 }
@@ -34,6 +38,8 @@ const REVISION = /^[a-f0-9]{64}$/;
 const QUERY_BATCH_LIMIT = 64;
 const QUERY_BATCH_PARALLELISM = 2;
 export const WRITE_BATCH_LIMIT = 200;
+
+const WRITE_CONFLICT_ATTEMPTS = 16;
 
 const isObject = (value: unknown): value is Fields => value !== null && typeof value === "object" && !Array.isArray(value);
 const isKey = (value: unknown): value is RecordKey => isObject(value) && typeof value.hash === "string" &&
@@ -135,11 +141,16 @@ function nativeOperation(op: BatchMutationOp, current: QueryRow | null) {
   };
 }
 
-export async function writeRecords(call: Call, ops: BatchMutationOp[], mapError: NodeError): Promise<void> {
-  if (ops.length === 0) return;
-  if (ops.length > WRITE_BATCH_LIMIT) throw new Error(`One atomic write may contain at most ${WRITE_BATCH_LIMIT} records.`);
-  const ids = ops.map((op) => coordinateId(op.schemaHash, opKey(op)));
-  if (new Set(ids).size !== ids.length) throw new Error("An atomic write must name each record once.");
+function conflictDetail(body: Fields): string {
+  const key = body.key === undefined ? "" : JSON.stringify(body.key);
+  return [body.schema, key, body.expected, body.actual].filter((part) => part !== undefined && part !== "").join(" ");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function commitWrite(call: Call, ops: BatchMutationOp[], mapError: NodeError, ids: string[]): Promise<void> {
   const unread = ops.filter((op) => op.preimage === undefined && op.mutationType !== "create");
   const reads = await readPreimages(call, unread, mapError);
   let index = 0;
@@ -158,7 +169,7 @@ export async function writeRecords(call: Call, ops: BatchMutationOp[], mapError:
     throw new Error("LastDB did not confirm the write outcome. Read the records before retrying.", { cause });
   }
   const result = payload(response.body);
-  if (response.status === 409 && result.error === "cas_conflict") throw new RecordConflict();
+  if (response.status === 409 && result.error === "cas_conflict") throw new RecordConflict(conflictDetail(result));
   if (response.status >= 500) throw new Error("LastDB did not confirm the write outcome. Read the records before retrying.");
   if (response.status !== 200) throw mapError(response.status, response.body, path);
   const operations = object(result.operations);
@@ -174,5 +185,26 @@ export async function writeRecords(call: Call, ops: BatchMutationOp[], mapError:
       mutationIds.some((id) => typeof id !== "string" || !id || !Object.hasOwn(revisions, id) ||
         typeof revisions[id] !== "string" || !REVISION.test(revisions[id]))) {
     throw new Error("LastDB did not confirm every durable write. Read the records before retrying.");
+  }
+}
+
+export async function writeRecords(call: Call, ops: BatchMutationOp[], mapError: NodeError): Promise<void> {
+  if (ops.length === 0) return;
+  if (ops.length > WRITE_BATCH_LIMIT) throw new Error(`One atomic write may contain at most ${WRITE_BATCH_LIMIT} records.`);
+  const ids = ops.map((op) => coordinateId(op.schemaHash, opKey(op)));
+  if (new Set(ids).size !== ids.length) throw new Error("An atomic write must name each record once.");
+  for (let attempt = 0; attempt < WRITE_CONFLICT_ATTEMPTS; attempt++) {
+    try {
+      // The first attempt keeps a preimage the caller already read. A conflict
+      // means that preimage is stale: drop it and read the live revision.
+      // Concurrent situation upserts all create one history-day marker. The
+      // loser has to replace the winner's marker instead of creating it again.
+      const pending = attempt === 0 ? ops : ops.map((op) => ({ ...op, preimage: undefined }));
+      await commitWrite(call, pending, mapError, ids);
+      return;
+    } catch (error) {
+      if (!(error instanceof RecordConflict) || attempt + 1 === WRITE_CONFLICT_ATTEMPTS) throw error;
+      await sleep(10 * (attempt + 1) + Math.floor(Math.random() * 25));
+    }
   }
 }

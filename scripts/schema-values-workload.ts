@@ -5,10 +5,10 @@ import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { APP_SCHEMAS } from "../src/schema-layout.ts";
-import { canonicalProfilesForHashes } from "../src/init-schema.ts";
+import { canonicalProfilesForHashes, resolveOrDeclareSchemaHashes } from "../src/init-schema.ts";
 import { fieldValueBytes } from "../src/field-value-size.ts";
 import type { Config } from "../src/config.ts";
-import type { BatchMutationOp, NodeClient } from "../src/client.ts";
+import { newNodeClient, type BatchMutationOp, type NodeClient } from "../src/client.ts";
 import type { Situation } from "../src/record.ts";
 import type { Notice } from "../src/notice.ts";
 
@@ -96,8 +96,10 @@ async function measure<T>(
   (samples[name] ??= []).push(performance.now() - start);
   return result;
 }
-async function client(root: string, cfg?: Config): Promise<NodeClient> {
-  const { newNodeClient } = await load(root, "client");
+async function client(cfg?: Config): Promise<NodeClient> {
+  // Both arms use this revision's client. The baseline client still posts
+  // declare-schema intent "check", and current LastDB rejects that variant.
+  // Record, notice, and publication functions still load from the arm.
   return newNodeClient({
     baseUrl: "http://127.0.0.1",
     userHash: cfg?.userHash ?? "",
@@ -149,17 +151,15 @@ async function setup(
   root: string,
   prior?: Config,
 ): Promise<{ node: NodeClient; cfg: Config }> {
-  let node = await client(root, prior);
+  let node = await client(prior);
   const identity = await node.autoIdentity();
   require(identity.provisioned, "The actual node did not provision an owner identity.");
-  node = await client(root, {
+  node = await client({
     ...prior,
     userHash: identity.userHash,
   } as Config);
-  const definitions = await load(root, "init-schema");
-  const resolved = await definitions.resolveOrDeclareSchemaHashes(node, {
+  const resolved = await resolveOrDeclareSchemaHashes(node, {
     quiet: true,
-    canonicalVocabulary: true,
     expectedIdentities: prior?.schemaIdentities,
   });
   const hashes = resolved.schemaHashes ?? resolved;
@@ -175,14 +175,14 @@ async function setup(
     schemaHashes: { ...prior?.schemaHashes, ...hashes },
     schemaFieldAliases: {
       ...prior?.schemaFieldAliases,
-      ...definitions.canonicalProfilesForHashes(hashes),
+      ...canonicalProfilesForHashes(hashes),
     },
     ...(resolved.schemaIdentities
       ? { schemaIdentities: resolved.schemaIdentities }
       : {}),
   };
   config.writeConfig(cfg, args.config);
-  return { node: observe(await client(root, cfg)), cfg };
+  return { node: observe(await client(cfg)), cfg };
 }
 
 async function snapshot(
@@ -398,7 +398,7 @@ async function runSetup(): Promise<void> {
   await checkLists(node, cfg, active, count);
   await publish(node, cfg, active, count);
   // Publication declarations update the real client's profiles. Reopen the adapter with all saved profiles.
-  node = observe(await client(active, cfg));
+  node = observe(await client(cfg));
   save("members.json", members);
   const before = await snapshot(node, cfg);
   save("seed-values.json", before);
@@ -421,7 +421,7 @@ async function runSetup(): Promise<void> {
 async function runMeasure(): Promise<void> {
   const config = await load(active, "config");
   let cfg: Config = config.readConfig(args.config);
-  let node = observe(await client(active, cfg));
+  let node = observe(await client(cfg));
   require(same(
     await snapshot(node, cfg),
     read("seed-values.json"),
@@ -539,9 +539,9 @@ else if (args.mode === "measure") await runMeasure();
 else if (args.mode === "verify") {
   const cfg = (await load(active, "config")).readConfig(args.config);
   require(same(
-    await snapshot(await client(active, cfg), cfg),
+    await snapshot(await client(cfg), cfg),
     read("final-values.json"),
   ), "Final flush/reopen changed data or current values.");
-  await checkLists(await client(active, cfg), cfg, active, count);
+  await checkLists(await client(cfg), cfg, active, count);
   save("final-reopen.json", { complete: true });
 } else throw Error("Unknown workload phase.");

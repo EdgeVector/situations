@@ -83,7 +83,6 @@ export type NodeClient = {
   declareAppSchema(
     appId: string,
     schema: Record<string, unknown>,
-    intent?: "check",
   ): Promise<AppSchemaDeclaration>;
   createRecord(opts: {
     schemaHash: string;
@@ -272,14 +271,16 @@ export function newNodeClient(opts: {
             : [],
         }); });
     },
-    async declareAppSchema(appId, schema, intent) {
+    async declareAppSchema(appId, schema) {
       const local = schema as unknown as SchemaDefinition;
       await requireOwnedSetup();
       schema = canonicalSchema(local) as unknown as Record<string,unknown>;
+      // Current LastDB accepts { app_id, schema } and an optional retention
+      // beside schema. The intent defaults to catalog_sync. The old "check"
+      // variant is rejected.
       const { status, body } = await callJson("POST", "/api/apps/declare-schema", {
         app_id: appId,
         schema,
-        ...(intent ? { intent } : {}),
       });
       if (status !== 200) throw mapNodeError(status, body, "/api/apps/declare-schema");
       const binding=ownedDeclaration(body,local.name);
@@ -287,10 +288,7 @@ export function newNodeClient(opts: {
       const canonical=binding.runtime;
       const schemaName=String(b.schema_name);
       const resolution=String(b.resolution ?? "");
-      if (intent === "check" && (b.intent !== "check" || b.dry_run !== true)) {
-        throw new Error("The node did not confirm a read-only schema check.");
-      }
-      if (!intent) Object.assign(fieldProfiles, profilesFor(local, [canonical, schemaName]));
+      Object.assign(fieldProfiles, profilesFor(local, [canonical, schemaName]));
       return {
         app_id: typeof b.app_id === "string" ? b.app_id : appId,
         schema: schemaName,

@@ -324,8 +324,7 @@ export function newNodeClient(opts: {
         return { HashRangeKey: { hash: pair[0], range: pair[1] === "" ? null : pair[1] } };
       }) : [filter];
       let pending = filters.map((selection) => ({ filter: selection, cursor: undefined as unknown, seen: new Set<string>() }));
-      for (let page = 0; page < 1000; page++) {
-        if (!pending.length) return { ok: true, results: rows, total_count: rows.length, returned_count: rows.length };
+      for (let page = 0; pending.length && page < 1000; page++) {
         const group = pending.slice(0, 64);
         const reads = group.map((item) => keyedRead(schemaHash, item.filter, limit, item.cursor));
         const response = await callJson("POST", "/v1/read", { reads });
@@ -352,7 +351,8 @@ export function newNodeClient(opts: {
         if (rows.length > QUERY_MAX_ROWS) throw new Error("The query exceeds its complete-result limit.");
         pending = [...again, ...pending.slice(group.length)];
       }
-      throw new Error("The query page limit stopped an incomplete result.");
+      if (pending.length) throw new Error("The query page limit stopped an incomplete result.");
+      return { ok: true, results: rows, total_count: rows.length, returned_count: rows.length };
     },
   };
 }

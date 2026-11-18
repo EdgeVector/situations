@@ -13,7 +13,7 @@ import sys
 OPERATIONS = ("point_read", "update", "notice_read", "active_list", "publication")
 # LastDB refuses a record above its record cap.
 RECORD_CAP_BYTES = 64 * 1024
-NATIVE_API = 30
+NATIVE_API = 40
 
 
 def require(condition, message):

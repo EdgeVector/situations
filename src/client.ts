@@ -2,7 +2,7 @@ import { requireOwnedHome, ownedDeclaration, object, payload } from "./schema-mo
 import { canonicalSchema, profilesFor } from "./canonical-vocabulary.ts";
 import { fieldAliasTransport, encodeFieldRequest, decodeFieldReply, localSchemaMetadata, type FieldAliasProfiles } from "./field-alias-transport.ts";
 import type { SchemaDefinition } from "./schemas.ts";
-import { coordinateId, readPage, writeRecords, type BatchMutationOp, type QueryFilter, type QueryRow } from "./native-records.ts";
+import { coordinateId, keyedRead, readPage, readResults, writeRecords, type BatchMutationOp, type QueryFilter, type QueryRow } from "./native-records.ts";
 export type { BatchMutationOp, QueryFilter, QueryRow } from "./native-records.ts";
 
 // The SDK supplies the version handshake. The data plane sends complete native
@@ -97,7 +97,7 @@ export type NodeClient = {
     keyRange?: string;
   }): Promise<void>;
   /**
-   * `POST /api/mutations/batch`: every op commits in ONE request (one resident
+   * `POST /v1/write`: every op commits in ONE request (one resident
    * commit, one revision). Callers chunk with `commitOps` in index-entry.ts.
    */
   mutateBatch(ops: BatchMutationOp[]): Promise<void>;
@@ -317,28 +317,40 @@ export function newNodeClient(opts: {
       const limit = Math.min(1000, Math.max(1, pageSize ?? 100));
       const rows: QueryRow[] = [];
       const seenKeys = new Set<string>();
-      const seenCursors = new Set<string>();
-      let cursor: unknown;
+      const filters = Array.isArray(filter.HashRangeKeys) ? filter.HashRangeKeys.map((pair) => {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string") {
+          throw new Error("A multi-key read requires hash and range pairs.");
+        }
+        return { HashRangeKey: { hash: pair[0], range: pair[1] === "" ? null : pair[1] } };
+      }) : [filter];
+      let pending = filters.map((selection) => ({ filter: selection, cursor: undefined as unknown, seen: new Set<string>() }));
       for (let page = 0; page < 1000; page++) {
-        const requestBody = { schema_name: schemaHash, filter, limit, ...(cursor === undefined ? {} : { cursor }) };
-        const response = await callJson("POST", "/api/query", requestBody);
-        if (response.status !== 200) throw mapNodeError(response.status, response.body, "/api/query");
-        const result = readPage(response.body, filter);
-        for (const row of result.rows) {
-          const id = coordinateId(schemaHash, row.key);
-          if (seenKeys.has(id)) throw new Error("The query returned the same key on multiple pages.");
-          seenKeys.add(id);
-          rows.push(row);
+        if (!pending.length) return { ok: true, results: rows, total_count: rows.length, returned_count: rows.length };
+        const group = pending.slice(0, 64);
+        const reads = group.map((item) => keyedRead(schemaHash, item.filter, limit, item.cursor));
+        const response = await callJson("POST", "/v1/read", { reads });
+        if (response.status !== 200) throw mapNodeError(response.status, response.body, "/v1/read");
+        const again: typeof pending = [];
+        for (const [index, item] of readResults(response.body, reads.length).entries()) {
+          const selection = group[index]!;
+          const result = readPage(item, selection.filter);
+          for (const row of result.rows) {
+            const id = coordinateId(schemaHash, row.key);
+            if (seenKeys.has(id)) throw new Error("The query returned the same key on multiple pages.");
+            seenKeys.add(id);
+            rows.push(row);
+          }
+          if (result.hasMore) {
+            const next = result.cursor;
+            if (typeof next !== "string" || !next || selection.seen.has(next)) {
+              throw new Error("The query lacks a fresh continuation cursor.");
+            }
+            selection.seen.add(next);
+            again.push({ ...selection, cursor: next });
+          }
         }
         if (rows.length > QUERY_MAX_ROWS) throw new Error("The query exceeds its complete-result limit.");
-        if (!result.hasMore) return { ok: true, results: rows, total_count: rows.length, returned_count: rows.length };
-        const next = result.cursor;
-        const encoded = JSON.stringify(next);
-        if (next === undefined || next === null || next === "" || seenCursors.has(encoded)) {
-          throw new Error("The query lacks a fresh continuation cursor.");
-        }
-        seenCursors.add(encoded);
-        cursor = next;
+        pending = [...again, ...pending.slice(group.length)];
       }
       throw new Error("The query page limit stopped an incomplete result.");
     },

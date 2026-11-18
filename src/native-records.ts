@@ -71,18 +71,47 @@ export function filterCovers(filter: QueryFilter, key: RecordKey): boolean {
 
 export function readPage(body: unknown, filter: QueryFilter): { rows: QueryRow[]; hasMore: boolean; cursor: unknown } {
   const result = payload(body);
-  if (result.ok !== true || typeof result.has_more !== "boolean" || !Array.isArray(result.results) ||
-      result.returned_count !== result.results.length) throw new Error("LastDB did not confirm a complete record page.");
-  const rows = result.results.map((value: unknown) => {
-    if (!isObject(value) || !isKey(value.key) || !isObject(value.fields) ||
+  if (!Array.isArray(result.records) || !(result.next_cursor === null || typeof result.next_cursor === "string")) {
+    throw new Error("LastDB did not confirm a complete record page.");
+  }
+  const rows = result.records.flatMap((value: unknown) => {
+    if (!isObject(value) || !isKey(value.key) || !isObject(value.record) ||
         typeof value.revision !== "string" || !REVISION.test(value.revision) ||
-        !isObject(value.alternates) || !Object.values(value.alternates).every((alternate) => alternate === null || isKey(alternate)) ||
-        !(value.metadata === null || isObject(value.metadata)) || !filterCovers(filter, value.key)) {
+        !(value.file === null || isObject(value.file))) {
       throw new Error("LastDB returned a malformed or out-of-range record.");
     }
-    return value as QueryRow;
+    // The app's ranges have an exclusive end; the API includes its end key.
+    const span = object(filter.HashRangeRange);
+    if (span.hash === value.key.hash && span.end === value.key.range) return [];
+    if (!filterCovers(filter, value.key)) throw new Error("LastDB returned an out-of-range record.");
+    return [{ fields: value.record, key: value.key, revision: value.revision,
+      alternates: {}, metadata: value.file === null ? null : { file: value.file } }];
   });
-  return { rows, hasMore: result.has_more, cursor: result.next_cursor };
+  return { rows, hasMore: result.next_cursor !== null, cursor: result.next_cursor };
+}
+
+export function keyedRead(schema: string, filter: QueryFilter, limit: number, cursor?: unknown): Fields {
+  const exact = object(filter.HashRangeKey);
+  const span = object(filter.HashRangeRange);
+  let selection: Fields;
+  if (typeof filter.HashKey === "string") selection = { range: { hash: filter.HashKey } };
+  else if (typeof exact.hash === "string" && (exact.range === null || typeof exact.range === "string")) {
+    selection = { key: exact };
+  } else if (typeof span.hash === "string" && typeof span.start === "string" && typeof span.end === "string") {
+    selection = { range: span };
+  } else throw new Error("A read requires known keys or a bounded range.");
+  return { schema, ...selection, limit, ...(cursor === undefined ? {} : { cursor }) };
+}
+
+export function readResults(body: unknown, count: number): unknown[] {
+  const result = payload(body);
+  if (!Array.isArray(result.results) || result.results.length !== count) {
+    throw new Error("LastDB did not confirm every requested read.");
+  }
+  for (const item of result.results) {
+    if (!isObject(item) || item.error) throw new Error("LastDB refused a requested read.");
+  }
+  return result.results;
 }
 
 async function readPreimages(call: Call, ops: BatchMutationOp[], mapError: NodeError): Promise<(QueryRow | null)[]> {
@@ -97,22 +126,13 @@ async function readPreimages(call: Call, ops: BatchMutationOp[], mapError: NodeE
 }
 
 async function readChunk(call: Call, ops: BatchMutationOp[], mapError: NodeError): Promise<(QueryRow | null)[]> {
-  const path = "/api/queries/batch";
-  const queries = ops.map((op) => ({
-    schema_name: op.schemaHash,
-    filter: op.keyRange === undefined ? { HashKey: op.keyHash } : { HashRangeKey: opKey(op) },
-    limit: 2,
-  }));
-  const { status, body } = await call("POST", path, { queries });
+  const path = "/v1/read";
+  const filters = ops.map((op) => ({ HashRangeKey: opKey(op) }));
+  const reads = ops.map((op, i) => keyedRead(op.schemaHash, filters[i]!, 2));
+  const { status, body } = await call("POST", path, { reads });
   if (status !== 200) throw mapError(status, body, path);
-  const result = payload(body);
-  if (result.ok !== true || result.count !== queries.length || !Array.isArray(result.results) ||
-      result.results.length !== queries.length) throw new Error("LastDB did not confirm every preimage read.");
-  return queries.map((query, index) => {
-    const item = object((result.results as unknown[])[index]);
-    if (typeof item.status === "number" && item.status !== 200) throw mapError(item.status, item.response, "/api/query");
-    if (item.status !== 200) throw new Error("LastDB did not confirm a preimage read.");
-    const page = readPage(item.response, query.filter);
+  return readResults(body, reads.length).map((item, index) => {
+    const page = readPage(item, filters[index]!);
     if (page.hasMore || page.rows.length > 1 ||
         (page.rows[0] && page.rows[0].key.range !== opKey(ops[index]!).range)) {
       throw new Error("LastDB did not confirm an exact preimage.");
@@ -124,20 +144,16 @@ async function readChunk(call: Call, ops: BatchMutationOp[], mapError: NodeError
 function nativeOperation(op: BatchMutationOp, current: QueryRow | null) {
   if (current && op.mutationType === "create") throw new RecordConflict();
   if (!current && op.mutationType === "delete") return null;
-  const deleting = op.mutationType === "delete";
-  const metadata = deleting ? null : current?.metadata;
+  const key = opKey(op);
+  if (op.mutationType === "delete") {
+    return { schema: op.schemaHash, op: "delete", key, revision: current!.revision };
+  }
   return {
-    type: "mutation",
     schema: op.schemaHash,
-    key_value: opKey(op),
-    mutation_type: deleting ? "delete" : current ? "replace" : "create",
-    record: deleting ? {} : { ...current?.fields, ...op.fields },
-    alternates: current?.alternates ?? {},
-    expected: current ? { type: "revision", revision: current.revision } : { type: "absent" },
-    source_file_name: metadata?.source_file_name ?? null,
-    metadata: metadata?.metadata ?? null,
-    file: metadata?.file ?? null,
-    durability: "durable",
+    op: current ? "replace" : "create",
+    key,
+    record: { ...current?.fields, ...op.fields },
+    ...(current ? { revision: current.revision } : {}),
   };
 }
 
@@ -161,29 +177,22 @@ async function commitWrite(call: Call, ops: BatchMutationOp[], mapError: NodeErr
   }).filter((op) => op !== null);
   if (mutations.length === 0) return;
 
-  const path = "/api/mutations/batch";
+  const path = "/v1/write";
   let response: Awaited<ReturnType<Call>>;
   try {
-    response = await call("POST", path, { mutations, convergence: "async" });
+    response = await call("POST", path, { mutations });
   } catch (cause) {
     throw new Error("LastDB did not confirm the write outcome. Read the records before retrying.", { cause });
   }
   const result = payload(response.body);
-  if (response.status === 409 && result.error === "cas_conflict") throw new RecordConflict(conflictDetail(result));
+  if (response.status === 409 && object(result.error).code === "conflict") {
+    throw new RecordConflict(conflictDetail(object(result.error)));
+  }
   if (response.status >= 500) throw new Error("LastDB did not confirm the write outcome. Read the records before retrying.");
   if (response.status !== 200) throw mapError(response.status, response.body, path);
-  const operations = object(result.operations);
-  const revisions = object(result.record_revisions);
-  const mutationIds = result.mutation_ids;
-  if (result.ok !== true || result.count !== mutations.length || result.durability !== "durable" ||
-      operations.total !== mutations.length ||
-      operations.created !== mutations.filter((op) => op.mutation_type === "create").length ||
-      operations.updated !== mutations.filter((op) => op.mutation_type === "replace").length ||
-      operations.deleted !== mutations.filter((op) => op.mutation_type === "delete").length ||
-      !Array.isArray(mutationIds) || mutationIds.length !== mutations.length || new Set(mutationIds).size !== mutations.length ||
-      Object.keys(revisions).length !== mutations.length ||
-      mutationIds.some((id) => typeof id !== "string" || !id || !Object.hasOwn(revisions, id) ||
-        typeof revisions[id] !== "string" || !REVISION.test(revisions[id]))) {
+  const revisions = result.revisions;
+  if (result.written !== mutations.length || !Array.isArray(revisions) || revisions.length !== mutations.length ||
+      revisions.some((revision) => typeof revision !== "string" || !REVISION.test(revision))) {
     throw new Error("LastDB did not confirm every durable write. Read the records before retrying.");
   }
 }

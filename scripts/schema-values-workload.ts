@@ -9,6 +9,7 @@ import { canonicalProfilesForHashes, resolveOrDeclareSchemaHashes } from "../src
 import { fieldValueBytes } from "../src/field-value-size.ts";
 import type { Config } from "../src/config.ts";
 import { newNodeClient, type BatchMutationOp, type NodeClient } from "../src/client.ts";
+import { readPage, readResults } from "../src/native-records.ts";
 import type { Situation } from "../src/record.ts";
 import type { Notice } from "../src/notice.ts";
 
@@ -202,38 +203,19 @@ async function snapshot(
   });
   for (let start = 0; start < pending.length; start += 64) {
     const group = pending.slice(start, start + 64);
-    const queries = group.map(({ address, definition, record }) => ({
-      schema_name: address,
-      filter:
-        record.key.range === null
-          ? { HashKey: record.key.hash }
-          : {
-              HashRangeKey: { hash: record.key.hash, range: record.key.range },
-            },
-      response_format: "full",
+    const reads = group.map(({ address, record }) => ({
+      schema: address,
+      key: record.key,
       limit: 2,
-      offset: 0,
     }));
-    const result = await node.rawCall("POST", "/api/queries/batch", {
-      queries,
-    });
-    const body = (result.body as any)?.data ?? result.body;
-    require(result.status === 200 &&
-      body.ok === true &&
-      body.count === group.length &&
-      Array.isArray(body.results) &&
-      body.results.length ===
-        group.length, "The complete known-key batch differs.");
+    const result = await node.rawCall("POST", "/v1/read", { reads });
+    require(result.status === 200, "The complete known-key batch differs.");
+    const responses = readResults(result.body, group.length);
     for (let index = 0; index < group.length; index++) {
       const { key, definition, record } = group[index]!;
-      const item = body.results[index];
-      const response = item.response?.data ?? item.response;
-      require(item.status === 200 &&
-        response?.ok === true &&
-        response.has_more === false &&
-        response.results?.length ===
-          1, "A written record is absent or ambiguous.");
-      const row = response.results[0];
+      const response = readPage(responses[index], { HashRangeKey: record.key });
+      require(!response.hasMore && response.rows.length === 1, "A written record is absent or ambiguous.");
+      const row = response.rows[0]!;
       require(same(row.key, record.key) &&
         same(
           Object.keys(row.fields).sort(),
@@ -243,8 +225,7 @@ async function snapshot(
         row.fields,
         record.fields,
       ), `The actual ${key} values differ from accepted app writes.`);
-      require(typeof row.revision === "string" && row.revision.length > 0 &&
-        same(row.alternates, {}), "A record is missing its revision or explicit alternate membership.");
+      require(typeof row.revision === "string" && row.revision.length > 0, "A record is missing its revision.");
       // A record has one metadata block, or null.
       values[`${key}/${stable(record.key)}`] = {
         value_sha256: Object.fromEntries(

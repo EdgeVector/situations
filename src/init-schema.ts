@@ -21,7 +21,7 @@ const TARGETS: SchemaTarget[] = APP_SCHEMAS.map(({ key, definition }) => ({
   schema: { schema: definition, mutation_mappers: {} },
 }));
 
-/** Explicit setup checks the whole app before it declares seven owned schemas. */
+/** Explicit setup declares the seven owned schemas. There is no dry-run intent. */
 export async function resolveOrDeclareSchemaHashes(
   node: NodeClient,
   opts: {
@@ -35,25 +35,6 @@ export async function resolveOrDeclareSchemaHashes(
 }> {
   const loaded = await node.listSchemas();
   requireOwnedHome({ ready: true, schemas: loaded });
-  // Preview the whole application before any declaration, including existing
-  // field definitions, key layouts, and any identity pins from a saved config.
-  const previews = await Promise.all(TARGETS.map(({ schema }) =>
-    node.declareAppSchema(OWNER_APP_ID, schema.schema as unknown as Record<string, unknown>, "check"),
-  ));
-  if (previews.some((preview, index) => {
-    const target = TARGETS[index]!;
-    const installed = loaded.find((schema) => schema.name === preview.canonical);
-    const expected = opts.expectedIdentities?.[target.key];
-    const pin = opts.requestedPins?.[target.key];
-    return (installed && installed.identity_hash !== preview.identity) ||
-      (expected !== undefined && expected !== preview.identity) ||
-      (pin !== undefined && pin !== preview.identity);
-  })) {
-    throw new FsituationsError({
-      code: "native_schema_identity_mismatch",
-      message: "A Situations definition differs from the existing node or config. Resolve the difference before setup.",
-    });
-  }
   const declarations = await Promise.all(TARGETS.map(({ schema }) =>
     node.declareAppSchema(OWNER_APP_ID, schema.schema as unknown as Record<string, unknown>),
   ));
@@ -62,10 +43,17 @@ export async function resolveOrDeclareSchemaHashes(
   const schemaIdentities: Record<string, string> = {};
   for (const [index, { key, schema }] of TARGETS.entries()) {
     const declared = declarations[index]!;
-    const preview = previews[index]!;
+    const expected = opts.expectedIdentities?.[key];
+    const pin = opts.requestedPins?.[key];
+    if ((expected !== undefined && expected !== declared.identity) ||
+        (pin !== undefined && pin !== declared.identity)) {
+      throw new FsituationsError({
+        code: "native_schema_identity_mismatch",
+        message: "A Situations definition differs from the existing node or config. Resolve the difference before setup.",
+      });
+    }
     const row = installed.find((item) => item.name === declared.canonical);
-    if (declared.canonical !== preview.canonical || declared.identity !== preview.identity ||
-        !row || row.owner_app_id !== OWNER_APP_ID || row.identity_hash !== declared.identity ||
+    if (!row || row.owner_app_id !== OWNER_APP_ID || row.identity_hash !== declared.identity ||
         !matchesKeys(row.record_keys, schema.schema.record_keys)) {
       throw new FsituationsError({
         code: "native_schema_declaration_unconfirmed",

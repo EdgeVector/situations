@@ -27,7 +27,7 @@ import {
   NOTICE_HISTORY_MARKER,
 } from "./schemas.ts";
 
-/** Most ops in one `/api/mutations/batch` request. */
+/** Most ops in one atomic `/v1/write` request. */
 const BATCH_MAX_OPS = WRITE_BATCH_LIMIT;
 /** Partitions (range queries) in flight at once. */
 const READ_CONCURRENCY = 8;
@@ -413,8 +413,7 @@ function isUnsupportedFilter(err: unknown): boolean {
  * The records for `slugs` from one Hash-keyed product schema: one multi-get
  * (`HashRangeKeys`) per `HYDRATE_BATCH_KEYS`, never one call per record. A node
  * that rejects the filter falls back to bounded-parallel point reads. A slug the
- * multi-get missed is point-read once more: `/api/query` can null a real row out
- * of a page under load, and a missing record is worth one retry. The caller
+ * multi-get missed is point-read once more to confirm its absence. The caller
  * decides what a slug that is STILL missing means (`requireAll`).
  */
 export async function hydrateBySlug<T>(

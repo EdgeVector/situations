@@ -797,5 +797,5 @@
   "contract_surfaces": [
     "http"
   ],
-  "api_version": 30
+  "api_version": 40
 }
